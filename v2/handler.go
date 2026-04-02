@@ -19,6 +19,10 @@ type Handler struct {
 
 	// Optional: Logger
 	Logger Logger
+
+	// Config is the current configuration (atomic)
+	// Used for dynamic config access during routing
+	config atomic.Value // Stores *Config
 }
 
 // Logger is a simple logging interface.
@@ -36,13 +40,50 @@ func (h *Handler) Handle(conn net.Conn) error {
 	// Track bytes read for passthrough
 	tracking := newTrackingConn(conn)
 
+	// Load current config (used later for certmagic check)
+	_ = h.GetConfig()
+
 	// The decision from GetConfigForClient
 	var decision Decision
 	var decisionErr error
+	var certmagicHandledACME bool
 
 	// TLS server with routing callback
 	tlsConfig := &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			// Load latest config
+			var currentCfg *Config
+			if v := h.config.Load(); v != nil {
+				currentCfg = v.(*Config)
+			}
+
+			// Check for ACME-TLS/1 challenge with dedicated backend
+			for _, alpn := range hello.SupportedProtos {
+				if alpn == "acme-tls/1" && currentCfg != nil {
+					// Check per-domain ACME backend first
+					if backend, ok := currentCfg.ACMEBackends[hello.ServerName]; ok {
+						decision = Decision{
+							Action:  ActionPassthrough,
+							Backend: backend,
+							Domain:  hello.ServerName,
+							ALPN:    "acme-tls/1",
+						}
+						return nil, ErrPassthrough
+					}
+
+					// Check global ACME backend
+					if currentCfg.ACMEPassthrough != "" {
+						decision = Decision{
+							Action:  ActionPassthrough,
+							Backend: currentCfg.ACMEPassthrough,
+							Domain:  hello.ServerName,
+							ALPN:    "acme-tls/1",
+						}
+						return nil, ErrPassthrough
+					}
+				}
+			}
+
 			// Make routing decision
 			decision, decisionErr = h.Router.Route(hello.ServerName, hello.SupportedProtos)
 			if decisionErr != nil {
@@ -55,6 +96,18 @@ func (h *Handler) Handle(conn net.Conn) error {
 			// Handle passthrough
 			if decision.Action == ActionPassthrough {
 				return nil, ErrPassthrough
+			}
+
+			// Check if we have certmagic - it handles ACME automatically
+			if cmp, ok := h.Certs.(*CertmagicCertProvider); ok {
+				if cmp.IsManaged(hello.ServerName) {
+					// Use certmagic's GetCertificate directly
+					// It will automatically handle ACME-TLS/1 challenges
+					return &tls.Config{
+						GetCertificate: cmp.GetMagic().GetCertificate,
+						NextProtos:     []string{decision.ALPN},
+					}, nil
+				}
 			}
 
 			// Return TLS config for termination
@@ -75,7 +128,6 @@ func (h *Handler) Handle(conn net.Conn) error {
 
 	if h.TLSConfig != nil {
 		tlsConfig = h.TLSConfig.Clone()
-		// Preserve the GetConfigForClient callback
 		baseGetConfig := tlsConfig.GetConfigForClient
 		tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			if baseGetConfig != nil {
@@ -83,6 +135,38 @@ func (h *Handler) Handle(conn net.Conn) error {
 					return cfg, err
 				}
 			}
+
+			// Load latest config
+			var currentCfg *Config
+			if v := h.config.Load(); v != nil {
+				currentCfg = v.(*Config)
+			}
+
+			// Check for ACME-TLS/1 challenge with dedicated backend
+			for _, alpn := range hello.SupportedProtos {
+				if alpn == "acme-tls/1" && currentCfg != nil {
+					if backend, ok := currentCfg.ACMEBackends[hello.ServerName]; ok {
+						decision = Decision{
+							Action:  ActionPassthrough,
+							Backend: backend,
+							Domain:  hello.ServerName,
+							ALPN:    "acme-tls/1",
+						}
+						return nil, ErrPassthrough
+					}
+
+					if currentCfg.ACMEPassthrough != "" {
+						decision = Decision{
+							Action:  ActionPassthrough,
+							Backend: currentCfg.ACMEPassthrough,
+							Domain:  hello.ServerName,
+							ALPN:    "acme-tls/1",
+						}
+						return nil, ErrPassthrough
+					}
+				}
+			}
+
 			// Default routing callback
 			decision, decisionErr = h.Router.Route(hello.ServerName, hello.SupportedProtos)
 			if decisionErr != nil {
@@ -92,6 +176,17 @@ func (h *Handler) Handle(conn net.Conn) error {
 			if decision.Action == ActionPassthrough {
 				return nil, ErrPassthrough
 			}
+
+			// Check if we have certmagic
+			if cmp, ok := h.Certs.(*CertmagicCertProvider); ok {
+				if cmp.IsManaged(hello.ServerName) {
+					return &tls.Config{
+						GetCertificate: cmp.GetMagic().GetCertificate,
+						NextProtos:     []string{decision.ALPN},
+					}, nil
+				}
+			}
+
 			cert, err := h.Certs.GetCertificate(decision.Domain)
 			if err != nil {
 				return nil, err
@@ -119,12 +214,28 @@ func (h *Handler) Handle(conn net.Conn) error {
 		return err
 	}
 
+	// Check if certmagic handled ACME challenge
+	// This happens when handshake succeeded but no backend was selected
+	// (certmagic completed the TLS-ALPN challenge internally)
+	if decision.Backend == "" && decision.ALPN == "acme-tls/1" {
+		if cmp, ok := h.Certs.(*CertmagicCertProvider); ok {
+			if cmp.IsManaged(decision.Domain) {
+				h.logInfo("ACME challenge handled by certmagic", "domain", decision.Domain)
+				certmagicHandledACME = true
+			}
+		}
+	}
+
+	if certmagicHandledACME {
+		// Certmagic handled the challenge, just close cleanly
+		return nil
+	}
+
 	// Proxy HTTP (terminated)
 	return h.proxyHTTP(tlsConn, decision.Backend)
 }
 
 func (h *Handler) tunnelTCP(tracking *trackingConn, backend string) error {
-	// Dial backend
 	beConn, err := h.dial(backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", backend)
@@ -132,9 +243,10 @@ func (h *Handler) tunnelTCP(tracking *trackingConn, backend string) error {
 	}
 	defer beConn.Close()
 
-	// Copy peeked bytes first
-	if tracking.peeked != nil && len(tracking.peeked) > 0 {
-		if _, err := beConn.Write(tracking.peeked); err != nil {
+	// Copy peeked bytes first (multiple buffers, like original)
+	buffers := tracking.Passthru()
+	for _, buf := range buffers {
+		if _, err := beConn.Write(buf); err != nil {
 			return err
 		}
 	}
@@ -144,7 +256,6 @@ func (h *Handler) tunnelTCP(tracking *trackingConn, backend string) error {
 }
 
 func (h *Handler) proxyHTTP(tlsConn *tls.Conn, backend string) error {
-	// Dial backend
 	beConn, err := h.dial(backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", backend)
@@ -152,8 +263,6 @@ func (h *Handler) proxyHTTP(tlsConn *tls.Conn, backend string) error {
 	}
 	defer beConn.Close()
 
-	// For terminated TLS, we proxy the plaintext HTTP
-	// This is a simple TCP tunnel - HTTP parsing would be done by an HTTP proxy
 	return h.copyBidirectional(tlsConn, beConn)
 }
 
@@ -199,11 +308,31 @@ func (h *Handler) logError(msg string, args ...any) {
 	}
 }
 
+func (h *Handler) logInfo(msg string, args ...any) {
+	if h.Logger != nil {
+		h.Logger.Info(msg, args...)
+	}
+}
+
+// SetConfig atomically replaces the handler's configuration.
+func (h *Handler) SetConfig(cfg *Config) {
+	h.config.Store(cfg)
+}
+
+// GetConfig returns the current configuration.
+func (h *Handler) GetConfig() *Config {
+	if v := h.config.Load(); v != nil {
+		return v.(*Config)
+	}
+	return nil
+}
+
 // trackingConn wraps a net.Conn to track bytes read.
 // It also stores peeked bytes from the TLS handshake.
 type trackingConn struct {
 	net.Conn
-	peeked   []byte
+	peeked   [][]byte // Multiple buffers for peeked data (like original)
+	mu       sync.Mutex
 	read     atomic.Int64
 	written  atomic.Int64
 }
@@ -215,6 +344,19 @@ func newTrackingConn(conn net.Conn) *trackingConn {
 func (tc *trackingConn) Read(b []byte) (int, error) {
 	n, err := tc.Conn.Read(b)
 	tc.read.Add(int64(n))
+
+	// Store peeked data if this is the first read (before tunneling)
+	if tc.read.Load() <= int64(n) {
+		tc.mu.Lock()
+		if len(tc.peeked) == 0 {
+			// Store a copy of the peeked data
+			peek := make([]byte, n)
+			copy(peek, b[:n])
+			tc.peeked = append(tc.peeked, peek)
+		}
+		tc.mu.Unlock()
+	}
+
 	return n, err
 }
 
@@ -232,4 +374,19 @@ func (tc *trackingConn) BytesRead() int64 {
 // BytesWritten returns total bytes written.
 func (tc *trackingConn) BytesWritten() int64 {
 	return tc.written.Load()
+}
+
+// Passthru returns the peeked bytes for tunneling.
+// Matches the original wrappedConn.Passthru() interface.
+func (tc *trackingConn) Passthru() [][]byte {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	// Return a copy of the peeked data
+	result := make([][]byte, len(tc.peeked))
+	for i, buf := range tc.peeked {
+		result[i] = append([]byte{}, buf...)
+	}
+
+	return result
 }

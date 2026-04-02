@@ -23,7 +23,6 @@ const (
 	licenseType  = "MPL-2.0"
 )
 
-// set by GoReleaser via ldflags
 var (
 	version = "0.0.0-dev"
 	commit  = "0000000"
@@ -37,11 +36,17 @@ func printVersion() {
 }
 
 func main() {
-	// Define flags first
+	// Define flags
 	addr := flag.String("addr", ":443", "Address to listen on")
-	flag.StringVar(addr, "bind", ":443", "Address to listen on (alias for addr)")
+	bind := flag.String("bind", ":443", "Address to listen on (alias for addr)")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	showHelp := flag.Bool("help", false, "Show usage")
+
+	// ACME config
+	acmeEmail := flag.String("acme-email", "", "Email for ACME registration")
+	acmeDir := flag.String("acme-dir", "", "ACME directory URL (default: Let's Encrypt)")
+	acmeAgree := flag.Bool("acme-agree", false, "Agree to ACME terms")
+
 	flag.Parse()
 
 	if *showVersion {
@@ -60,8 +65,14 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Parse configuration
-	cfg, err := loadConfig(*addr)
+	// Determine bind address
+	listenAddr := *addr
+	if *bind != ":443" {
+		listenAddr = *bind
+	}
+
+	// Load configuration
+	cfg, err := loadConfig(listenAddr, *acmeEmail, *acmeDir, *acmeAgree)
 	if err != nil {
 		log.Fatalf("config error: %v", err)
 	}
@@ -72,15 +83,41 @@ func main() {
 		log.Fatalf("router build error: %v", err)
 	}
 
+	// Build cert provider
+	var certProvider tlsrouter.CertProvider
+	if cfg.Certmagic.Email != "" || cfg.Certmagic.DirectoryURL != "" {
+		// Use certmagic for real ACME
+		certProvider, err = tlsrouter.NewCertmagicCertProvider(cfg.Certmagic)
+		if err != nil {
+			log.Fatalf("certmagic error: %v", err)
+		}
+		log.Printf("using certmagic for ACME (email: %s)", cfg.Certmagic.Email)
+	} else {
+		// Use mock certs for testing
+		certProvider = tlsrouter.NewMockCertProvider()
+		log.Printf("using mock certificates (no ACME)")
+	}
+
 	// Build handler
 	handler := &tlsrouter.Handler{
 		Router: router,
-		Certs:  tlsrouter.NewMockCertProvider(), // TODO: switch to certmagic
+		Certs:  certProvider,
 		Dialer: &net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
 		},
 	}
+
+	// Set initial config (atomic) - convert to tlsrouter.Config
+	routerCfg := &tlsrouter.Config{
+		StaticRoutes:  cfg.StaticRoutes,
+		IPDomains:     cfg.IPDomains,
+		Networks:      cfg.Networks,
+		ACMEPassthrough: cfg.ACMEPassthrough,
+		ACMEBackends:  cfg.ACMEBackends,
+		Certmagic:     cfg.Certmagic,
+	}
+	handler.SetConfig(routerCfg)
 
 	// Build server
 	server := tlsrouter.NewServer(cfg.Addr, handler)
@@ -114,21 +151,32 @@ func main() {
 }
 
 type config struct {
-	Addr        string
+	Addr          string
 	StaticRoutes  map[string]tlsrouter.StaticRoute
-	IPDomains    []string
-	Networks     []net.IPNet
+	IPDomains     []string
+	Networks      []net.IPNet
+	ACMEPassthrough string
+	ACMEBackends  map[string]string
+	Certmagic     tlsrouter.CertmagicConfig
 }
 
-func loadConfig(addr string) (*config, error) {
+func loadConfig(addr, acmeEmail, acmeDir string, acmeAgree bool) (*config, error) {
 	cfg := &config{
 		Addr:          addr,
 		IPDomains:     []string{},
 		Networks:      []net.IPNet{},
 		StaticRoutes:  make(map[string]tlsrouter.StaticRoute),
+		ACMEBackends:  make(map[string]string),
+		Certmagic: tlsrouter.CertmagicConfig{
+			Email:                   acmeEmail,
+			DirectoryURL:            acmeDir,
+			Agreed:                  acmeAgree,
+			DisableHTTPChallenge:    true,  // Usually true for TLS routers
+			DisableTLSALPNChallenge: false, // Allow TLS-ALPN challenges
+		},
 	}
 
-	// Load static routes from CSV (first non-flag argument)
+	// Load static routes from CSV
 	if csvPath := flag.Arg(0); csvPath != "" {
 		routes, err := loadStaticRoutes(csvPath)
 		if err != nil {
@@ -149,6 +197,22 @@ func loadConfig(addr string) (*config, error) {
 			return nil, fmt.Errorf("parsing networks: %w", err)
 		}
 		cfg.Networks = nets
+	}
+
+	// Load ACME backend from env
+	if acmeBackend := os.Getenv("ACME_BACKEND"); acmeBackend != "" {
+		cfg.ACMEPassthrough = acmeBackend
+	}
+
+	// Load per-domain ACME backends
+	if acmeBackends := os.Getenv("ACME_BACKENDS"); acmeBackends != "" {
+		// Format: domain1=backend1,domain2=backend2
+		for _, pair := range strings.Split(acmeBackends, ",") {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) == 2 {
+				cfg.ACMEBackends[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			}
+		}
 	}
 
 	return cfg, nil
