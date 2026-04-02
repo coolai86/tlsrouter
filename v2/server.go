@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // Server is a TLS routing server.
@@ -55,8 +56,14 @@ func (s *Server) ListenAndServe() error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := s.Handler.Handle(conn); err != nil {
-				if !errors.Is(err, net.ErrClosed) {
+
+			// Create a per-connection context from server context
+			// Each connection gets a 5-minute timeout
+			connCtx, cancel := context.WithTimeout(s.ctx, 5*time.Minute)
+			defer cancel()
+
+			if err := s.Handler.Handle(connCtx, conn); err != nil {
+				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 					log.Printf("connection error: %v", err)
 				}
 			}

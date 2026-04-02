@@ -27,7 +27,11 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 	// Create storage (default to file storage)
 	var storage certmagic.Storage
 	if cfg.Storage != nil {
-		storage = cfg.Storage.(certmagic.Storage)
+		if s, ok := cfg.Storage.(certmagic.Storage); ok {
+			storage = s
+		} else {
+			return nil, fmt.Errorf("invalid storage type: %T", cfg.Storage)
+		}
 	} else {
 		storage = &certmagic.FileStorage{Path: "./certs"}
 	}
@@ -52,10 +56,14 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 
 	// Add DNS-01 solver if provider specified
 	if cfg.DNSProvider != nil {
-		issuer.DNS01Solver = &certmagic.DNS01Solver{
-			DNSManager: certmagic.DNSManager{
-				DNSProvider: cfg.DNSProvider.(certmagic.DNSProvider),
-			},
+		if provider, ok := cfg.DNSProvider.(certmagic.DNSProvider); ok {
+			issuer.DNS01Solver = &certmagic.DNS01Solver{
+				DNSManager: certmagic.DNSManager{
+					DNSProvider: provider,
+				},
+			}
+		} else {
+			return nil, fmt.Errorf("invalid DNS provider type: %T", cfg.DNSProvider)
 		}
 	}
 

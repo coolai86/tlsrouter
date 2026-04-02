@@ -2,6 +2,7 @@ package tlsrouter
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,7 +17,7 @@ import (
 	"time"
 )
 
-// mockDialer implements Dialer for testing.
+// mockDialer implements Dialer and ContextDialer for testing.
 type mockDialer struct {
 	mu      sync.Mutex
 	dialed  []string
@@ -57,6 +58,10 @@ func (m *mockDialer) Dial(network, addr string) (net.Conn, error) {
 	}
 
 	return &mockConn{}, nil
+}
+
+func (m *mockDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return m.Dial(network, addr)
 }
 
 func (m *mockDialer) dialedAddrs() []string {
@@ -190,7 +195,7 @@ func TestHandler_NoRoute(t *testing.T) {
 
 	_, serverConn := pipeConn()
 
-	err := handler.Handle(serverConn)
+	err := handler.Handle(context.Background(), serverConn)
 	if err == nil {
 		t.Error("expected error for no route, got nil")
 	}

@@ -2,6 +2,8 @@
 package tlsrouter
 
 import (
+	"context"
+	"crypto/x509"
 	"errors"
 	"net"
 )
@@ -36,6 +38,12 @@ type Router interface {
 	Route(sni string, alpns []string) (Decision, error)
 }
 
+// ContextDialer creates backend connections with context support.
+type ContextDialer interface {
+	Dialer
+	DialContext(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
 // Dialer creates backend connections.
 type Dialer interface {
 	Dial(network, addr string) (net.Conn, error)
@@ -52,5 +60,5 @@ type CertProvider interface {
 type Certificate struct {
 	Certificate [][]byte
 	PrivateKey  any
-	Leaf        any // *x509.Certificate, but using any to avoid import
+	Leaf        *x509.Certificate
 }

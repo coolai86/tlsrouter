@@ -1,11 +1,13 @@
 package tlsrouter
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Handler handles incoming TLS connections and routes them.
@@ -34,7 +36,8 @@ type Logger interface {
 
 // Handle handles a single connection.
 // It performs TLS handshake with routing and then proxies traffic.
-func (h *Handler) Handle(conn net.Conn) error {
+// ctx is used for cancellation and timeouts throughout the request.
+func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	defer conn.Close()
 
 	// Track bytes read for passthrough
@@ -47,6 +50,13 @@ func (h *Handler) Handle(conn net.Conn) error {
 	var decision Decision
 	var decisionErr error
 	var certmagicHandledACME bool
+
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// TLS server with routing callback
 	tlsConfig := &tls.Config{
@@ -208,7 +218,7 @@ func (h *Handler) Handle(conn net.Conn) error {
 	if err != nil {
 		if err == ErrPassthrough {
 			// Tunnel raw TCP
-			return h.tunnelTCP(tracking, decision.Backend)
+			return h.tunnelTCP(ctx, tracking, decision.Backend)
 		}
 		h.logError("handshake failed", "error", err, "domain", decision.Domain)
 		return err
@@ -232,11 +242,11 @@ func (h *Handler) Handle(conn net.Conn) error {
 	}
 
 	// Proxy HTTP (terminated)
-	return h.proxyHTTP(tlsConn, decision.Backend)
+	return h.proxyHTTP(ctx, tlsConn, decision.Backend)
 }
 
-func (h *Handler) tunnelTCP(tracking *trackingConn, backend string) error {
-	beConn, err := h.dial(backend)
+func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, backend string) error {
+	beConn, err := h.dialContext(ctx, backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", backend)
 		return err
@@ -251,19 +261,19 @@ func (h *Handler) tunnelTCP(tracking *trackingConn, backend string) error {
 		}
 	}
 
-	// Bidirectional copy
-	return h.copyBidirectional(tracking.Conn, beConn)
+	// Bidirectional copy with context
+	return h.copyBidirectionalWithContext(ctx, tracking.Conn, beConn)
 }
 
-func (h *Handler) proxyHTTP(tlsConn *tls.Conn, backend string) error {
-	beConn, err := h.dial(backend)
+func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, backend string) error {
+	beConn, err := h.dialContext(ctx, backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", backend)
 		return err
 	}
 	defer beConn.Close()
 
-	return h.copyBidirectional(tlsConn, beConn)
+	return h.copyBidirectionalWithContext(ctx, tlsConn, beConn)
 }
 
 func (h *Handler) dial(addr string) (net.Conn, error) {
@@ -271,6 +281,18 @@ func (h *Handler) dial(addr string) (net.Conn, error) {
 		return h.Dialer.Dial("tcp", addr)
 	}
 	return net.Dial("tcp", addr)
+}
+
+func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error) {
+	if h.Dialer != nil {
+		// Try ContextDialer first
+		if cd, ok := h.Dialer.(ContextDialer); ok {
+			return cd.DialContext(ctx, "tcp", addr)
+		}
+		// Fall back to regular Dialer
+		return h.Dialer.Dial("tcp", addr)
+	}
+	return net.DialTimeout("tcp", addr, 30*time.Second)
 }
 
 func (h *Handler) copyBidirectional(a, b net.Conn) error {
@@ -294,6 +316,82 @@ func (h *Handler) copyBidirectional(a, b net.Conn) error {
 		return errA2B
 	}
 	return errB2A
+}
+
+func (h *Handler) copyBidirectionalWithContext(ctx context.Context, a, b net.Conn) error {
+	var wg sync.WaitGroup
+	var errA2B, errB2A error
+	var done = make(chan struct{})
+
+	// Copy a -> b
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := copyWithContext(ctx, a, b)
+		if err != nil {
+			h.logError("copy a->b error", "error", err)
+			errA2B = err
+		}
+		closeWrite(b)
+	}()
+
+	// Copy b -> a
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := copyWithContext(ctx, b, a)
+		if err != nil {
+			h.logError("copy b->a error", "error", err)
+			errB2A = err
+		}
+		closeWrite(a)
+	}()
+
+	// Wait for completion or context cancellation
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if errA2B != nil {
+			return errA2B
+		}
+		return errB2A
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// copyWithContext copies data with context cancellation support.
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
+	buf := make([]byte, 32*1024) // 32KB buffer
+	for {
+		nr, err := src.Read(buf)
+		if nr > 0 {
+			nw, err := dst.Write(buf[0:nr])
+			if err != nil {
+				return err
+			}
+			if nw != nr {
+				return io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+	}
 }
 
 func closeWrite(c net.Conn) {
