@@ -3,6 +3,8 @@ package tlsrouter
 
 import (
 	"context"
+	"crypto"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"net"
@@ -59,6 +61,26 @@ type CertProvider interface {
 // Certificate wraps tls.Certificate for interface flexibility.
 type Certificate struct {
 	Certificate [][]byte
-	PrivateKey  any
+	PrivateKey  crypto.PrivateKey
 	Leaf        *x509.Certificate
+}
+
+// TLSCertificate converts to tls.Certificate for use with crypto/tls.
+func (c Certificate) TLSCertificate() (tls.Certificate, error) {
+	cert := tls.Certificate{
+		Certificate: c.Certificate,
+		PrivateKey:  c.PrivateKey,
+		Leaf:        c.Leaf,
+	}
+
+	// Parse certificates if Leaf is nil
+	if cert.Leaf == nil && len(cert.Certificate) > 0 {
+		var err error
+		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return tls.Certificate{}, err
+		}
+	}
+
+	return cert, nil
 }
