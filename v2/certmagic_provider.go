@@ -46,14 +46,31 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 		},
 	})
 
-	// Create ACME issuer
-	issuer := certmagic.ACMEIssuer{
+	// Create base config first (needed for issuer)
+	magic := certmagic.New(cache, certmagic.Config{
+		Storage: storage,
+		OnEvent: func(ctx context.Context, eventName string, data map[string]any) error {
+			if eventName == "cert_obtaining" {
+				if id, ok := data["identifier"]; ok {
+					fmt.Printf("Obtaining certificate for %s\n", id)
+				}
+			} else if eventName == "cert_obtained" {
+				if id, ok := data["identifier"]; ok {
+					fmt.Printf("Certificate obtained for %s\n", id)
+				}
+			}
+			return nil
+		},
+	})
+
+	// Create ACME issuer using NewACMEIssuer (properly initializes internal state)
+	issuer := certmagic.NewACMEIssuer(magic, certmagic.ACMEIssuer{
 		CA:                      cfg.DirectoryURL,
 		Email:                   cfg.Email,
 		Agreed:                  cfg.Agreed,
 		DisableHTTPChallenge:    cfg.DisableHTTPChallenge,
 		DisableTLSALPNChallenge: cfg.DisableTLSALPNChallenge,
-	}
+	})
 
 	// Add DNS-01 solver if provider specified
 	if cfg.DNSProvider != nil {
@@ -68,21 +85,8 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 		}
 	}
 
-	// Create certmagic config
-	magic := certmagic.New(cache, certmagic.Config{
-		Storage: storage,
-		Issuers: []certmagic.Issuer{&issuer},
-		OnEvent: func(ctx context.Context, eventName string, data map[string]any) error {
-			if eventName == "cert_obtaining" {
-				domain := data["identifier"].(string)
-				fmt.Printf("Obtaining certificate for %s\n", domain)
-			} else if eventName == "cert_obtained" {
-				domain := data["identifier"].(string)
-				fmt.Printf("Certificate obtained for %s\n", domain)
-			}
-			return nil
-		},
-	})
+	// Set the issuer on the config
+	magic.Issuers = []certmagic.Issuer{issuer}
 
 	// Enable on-demand (controlled via API)
 	magic.OnDemand = &certmagic.OnDemandConfig{
@@ -180,16 +184,16 @@ func (cp *CertmagicCertProvider) IsManaged(domain string) bool {
 
 // HasActiveChallenge checks if certmagic has an active ACME-TLS/1 challenge
 // for the given domain. This checks both in-memory (this process) and
-// distributed storage (other processes).
+// distributed storage (other TLSrouter instances).
 //
 // When a domain has both terminate and passthrough routes (e.g., SSH terminate
-// and HTTP passthrough), both TLSrouter and the backend (e.g., Caddy) may need
-// to get certificates. They share the same domain, so only one can solve
-// ACME-TLS/1 challenges at a time.
+// and HTTP passthrough), TLSrouter may need to get certificates. If TLSrouter
+// has an active challenge, it should handle the ACME-TLS/1 request. Otherwise,
+// the request should passthrough to the backend (e.g., Caddy), which handles
+// its own ACME independently.
 //
-// This function returns true when TLSrouter's certmagic has an ACTIVE challenge,
-// meaning TLSrouter should handle it. When false, the challenge should passthrough
-// to the backend.
+// Storage must be shared between TLSrouter instances (not with Caddy) for
+// distributed challenge coordination.
 func (cp *CertmagicCertProvider) HasActiveChallenge(domain string) bool {
 	// 1. Check in-memory challenges (this process initiated)
 	if _, ok := certmagic.GetACMEChallenge(domain); ok {

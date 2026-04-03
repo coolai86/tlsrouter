@@ -156,15 +156,16 @@ func TestACMEChallengePriority(t *testing.T) {
 	}
 }
 
-// TestACMESharedDomain tests the scenario where both TLSrouter and a backend
-// need certs for the same domain (e.g., SSH terminate + HTTP passthrough).
+// TestACMESharedDomain tests the scenario where TLSrouter terminates some routes
+// while passthrough to a backend (e.g., Caddy) for others on the same domain.
 //
 // Example:
 //
-//	example.com>http/1.1 → passthrough to Caddy:443
-//	example.com>ssh      → terminate at TLSrouter
+//	example.com>http/1.1 → passthrough to Caddy:443 (Caddy's TLS)
+//	example.com>ssh      → terminate at TLSrouter (TLSrouter's TLS)
 //
-// Both need ACME-TLS/1 for example.com, but not simultaneously.
+// TLSrouter and Caddy each handle ACME independently. Storage is shared between
+// TLSrouter instances only, not with Caddy.
 func TestACMESharedDomain(t *testing.T) {
 	// Setup: Create config with SSH route terminating, HTTP route passthrough
 	config := &Config{
