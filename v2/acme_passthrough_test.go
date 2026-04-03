@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -118,44 +117,6 @@ func TestACMETLS1PassthroughIntegration(t *testing.T) {
 	}
 	handlerA.SetConfig(cfgA)
 
-	// Start TLSrouter A listening on :443
-	// Note: This requires root or CAP_NET_BIND_SERVICE
-	portA := ":443"
-	listenerA, err := net.Listen("tcp", portA)
-	if err != nil {
-		t.Logf("Failed to listen on %s: %v", portA, err)
-		t.Logf("Trying :1443 (requires port forwarding from :443)")
-		portA = ":1443"
-		listenerA, err = net.Listen("tcp", portA)
-		if err != nil {
-			t.Fatalf("Failed to create listener A: %v", err)
-		}
-	}
-	defer listenerA.Close()
-
-	actualPortA := listenerA.Addr().(*net.TCPAddr).Port
-	t.Logf("TLSrouter A listening on port %d", actualPortA)
-
-	if actualPortA != 443 {
-		t.Logf("WARNING: Not on port 443. You need port forwarding: 443 → %d", actualPortA)
-		t.Logf("Let's Encrypt will connect to port 443, not %d", actualPortA)
-	}
-
-	// Start TLSrouter A server
-	serverA := NewServer(handlerA)
-	ctxA, cancelA := context.WithCancel(context.Background())
-	defer cancelA()
-
-	go func() {
-		t.Logf("Starting TLSrouter A server...")
-		if err := serverA.Serve(ctxA, listenerA); err != context.Canceled {
-			t.Logf("TLSrouter A server error: %v", err)
-		}
-	}()
-
-	// Wait for server to start
-	time.Sleep(1 * time.Second)
-
 	// ========== TLSrouter B (Backend) ==========
 	t.Log("=== Creating TLSrouter B (backend on :8443) ===")
 
@@ -193,36 +154,44 @@ func TestACMETLS1PassthroughIntegration(t *testing.T) {
 	}
 	handlerB.SetConfig(cfgB)
 
-	// Start TLSrouter B listening on :8443
-	portB := ":8443"
-	listenerB, err := net.Listen("tcp", portB)
-	if err != nil {
-		t.Logf("Failed to listen on %s: %v", portB, err)
-		portB = ":18443"
-		listenerB, err = net.Listen("tcp", portB)
-		if err != nil {
-			t.Fatalf("Failed to create listener B: %v", err)
+	// Start TLSrouter A listening on :443
+	// Note: This requires root or CAP_NET_BIND_SERVICE
+	serverA := NewServer(":443", handlerA)
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+
+	go func() {
+		t.Logf("Starting TLSrouter A server on :443...")
+		if err := serverA.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
+			t.Logf("TLSrouter A server error: %v", err)
 		}
-	}
-	defer listenerB.Close()
+	}()
 
-	actualPortB := listenerB.Addr().(*net.TCPAddr).Port
-	t.Logf("TLSrouter B listening on port %d", actualPortB)
-
-	// Start TLSrouter B server
-	serverB := NewServer(handlerB)
+	// Start TLSrouter B listening on :8443
+	serverB := NewServer(":8443", handlerB)
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
 
 	go func() {
-		t.Logf("Starting TLSrouter B server...")
-		if err := serverB.Serve(ctxB, listenerB); err != context.Canceled {
+		t.Logf("Starting TLSrouter B server on :8443...")
+		if err := serverB.ListenAndServe(); err != nil && err.Error() != "http: Server closed" {
 			t.Logf("TLSrouter B server error: %v", err)
 		}
 	}()
 
-	// Wait for server to start
-	time.Sleep(1 * time.Second)
+	// Wait for servers to start
+	time.Sleep(2 * time.Second)
+
+	// Clean up on exit
+	defer func() {
+		cancelA()
+		cancelB()
+		time.Sleep(1 * time.Second)
+	}()
+
+	// Suppress unused variable warnings
+	_ = ctxA
+	_ = ctxB
 
 	// ========== Test 1: TLSrouter A obtains SSH certificate via ACME-TLS/1 ==========
 	t.Run("TLSrouter A obtains SSH cert via ACME-TLS/1", func(t *testing.T) {
@@ -349,7 +318,7 @@ func TestACMETLS1PassthroughIntegration(t *testing.T) {
 		// This simulates what happens when Let's Encrypt sends an ACME-TLS/1 challenge
 
 		// Connect to TLSrouter A
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", actualPortA), 5*time.Second)
+		conn, err := net.DialTimeout("tcp", "127.0.0.1:443", 5*time.Second)
 		if err != nil {
 			t.Fatalf("Failed to connect to TLSrouter A: %v", err)
 		}
