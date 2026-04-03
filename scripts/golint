@@ -1,0 +1,28 @@
+#!/bin/sh
+# golint - Run Go linters (fmt, imports, fix, vet)
+# Copy from skill-repos/root/go-stack/scripts/golint
+
+set -e
+
+echo "=== go fmt ==="
+go fmt ./...
+
+echo "=== goimports ==="
+# goimports is not installed by default, skip if not available
+if command -v goimports >/dev/null 2>&1; then
+    goimports -w .
+else
+    echo "goimports not installed, skipping"
+fi
+
+echo "=== go fix ==="
+go fix ./...
+
+echo "=== go vet ==="
+# Exclude sqlc-generated packages from vet (common pattern)
+# go vet ./...
+
+# For now, just vet the v2 package
+go vet ./v2/... ./cmd/...
+
+echo "=== Done ==="
