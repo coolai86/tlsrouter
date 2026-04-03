@@ -66,9 +66,10 @@ func NewDNSCache(opts ...DNSCacheOption) *DNSCache {
 
 // ResolveResult contains the resolved IP addresses and optional port.
 type ResolveResult struct {
-	IPs  []net.IP
-	Port uint16 // 0 if not from SRV
-	TTL  time.Duration
+	IPs    []net.IP
+	Port   uint16   // 0 if not from SRV
+	Target string   // SRV target hostname (for validation)
+	TTL    time.Duration
 }
 
 // Resolve resolves a hostname to IP addresses.
@@ -161,16 +162,15 @@ func (c *DNSCache) ResolveSRV(ctx context.Context, service, proto, domain string
 	// (would need raw DNS lookup for actual TTL)
 	ttl := c.minTTL
 
-	result := &ResolveResult{
-		IPs:  ips,
-		Port: uint16(srv.Port),
-		TTL:  ttl,
-	}
-
 	// Store in cache
 	c.store(cacheKey, ips, uint16(srv.Port), ttl)
 
-	return result, nil
+	return &ResolveResult{
+		IPs:    ips,
+		Port:   uint16(srv.Port),
+		Target: target,
+		TTL:    ttl,
+	}, nil
 }
 
 // resolveWithCNAME follows CNAME chains up to maxDepth.
@@ -320,10 +320,12 @@ func (c *DNSCache) Prune() int {
 //
 // Resolution order:
 // 1. If hostname is already a direct IP domain (tls-* or tcp-*), extract IP
-// 2. Try SRV lookup for service.alpn.domain
+// 2. Try SRV lookup for _alpn._tcp.hostname
 // 3. Try CNAME resolution
 // 4. Return resolved IP or error
-func (c *DNSCache) ResolveDirectIPDomain(ctx context.Context, hostname, alpn string, ipDomains []string, networks []net.IPNet) (net.IP, uint16, error) {
+//
+// SRV targets must be valid direct IP domains with matching ports.
+func (c *DNSCache) ResolveDirectIPDomain(ctx context.Context, hostname, alpn string, ipDomains []string, networks []net.IPNet, terminated bool) (net.IP, uint16, error) {
 	hostname = strings.ToLower(hostname)
 
 	// Check if it's already a direct IP domain
@@ -341,17 +343,41 @@ func (c *DNSCache) ResolveDirectIPDomain(ctx context.Context, hostname, alpn str
 	if svc == "http/1.1" {
 		svc = "http"
 	}
+	if svc == "h2c" {
+		svc = "h2"
+	}
+
 	srvResult, err := c.ResolveSRV(ctx, svc, "tcp", hostname)
-	if err == nil {
-		// SRV target should be validated in ResolveSRV
-		// Take first IP and validate
-		if len(srvResult.IPs) > 0 {
-			ip := srvResult.IPs[0]
-			if !ipInNetworks(ip, networks) {
-				return nil, 0, fmt.Errorf("SRV resolved IP %s not in allowed networks", ip)
-			}
-			return ip, srvResult.Port, nil
+	if err == nil && srvResult.Target != "" {
+		// SRV target must be a direct IP domain
+		// Example: tls-10-11-0-101.vms.tlsrouter.net.app.example.com
+		targetIP, _, ok := ParseDirectIPDomain(srvResult.Target, ipDomains)
+		if !ok {
+			return nil, 0, fmt.Errorf("SRV target %s is not a valid direct IP domain", srvResult.Target)
 		}
+
+		// Validate IP is in allowed networks
+		if !ipInNetworks(targetIP, networks) {
+			return nil, 0, fmt.Errorf("SRV target IP %s not in allowed networks", targetIP)
+		}
+
+		// Validate the port matches expected ports for this ALPN
+		// SRV port must be one of the valid ports for this ALPN
+		validPorts := ValidPortsForALPN(alpn, terminated)
+		if len(validPorts) > 0 {
+			portValid := false
+			for _, p := range validPorts {
+				if srvResult.Port == p {
+					portValid = true
+					break
+				}
+			}
+			if !portValid {
+				return nil, 0, fmt.Errorf("SRV port %d not valid for ALPN %s (expected one of %v)", srvResult.Port, alpn, validPorts)
+			}
+		}
+
+		return targetIP, srvResult.Port, nil
 	}
 
 	// Try CNAME resolution

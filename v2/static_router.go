@@ -333,6 +333,33 @@ var defaultRawPorts = map[string]uint16{
 	"xmpp-server": 5270,
 }
 
+// ValidPortsForALPN returns valid ports for an ALPN protocol.
+// Some protocols (like postgresql) may have multiple valid ports.
+func ValidPortsForALPN(alpn string, terminated bool) []uint16 {
+	var portMap map[string]uint16
+	if terminated {
+		portMap = defaultTerminatedPorts
+	} else {
+		portMap = defaultRawPorts
+	}
+
+	// Check primary port
+	if port, ok := portMap[alpn]; ok {
+		// Special cases with multiple valid ports
+		switch alpn {
+		case "postgresql":
+			// Allow both standard (5432) and tlsrouter (15432) ports
+			if terminated {
+				return []uint16{15432} // Terminated only uses 15432
+			}
+			return []uint16{5432, 15432} // Raw can use either
+		default:
+			return []uint16{port}
+		}
+	}
+	return nil
+}
+
 // LayeredRouter tries multiple routers in order.
 type LayeredRouter struct {
 	Routers []Router

@@ -198,7 +198,7 @@ func TestDNSCache_ResolveDirectIPDomain_InvalidDomain(t *testing.T) {
 	cache := NewDNSCache()
 	_, network, _ := net.ParseCIDR("192.168.0.0/16")
 
-	ip, port, err := cache.ResolveDirectIPDomain(context.Background(), "not-a-direct-domain.com", "ssh", []string{"vm.example.com"}, []net.IPNet{*network})
+	ip, port, err := cache.ResolveDirectIPDomain(context.Background(), "not-a-direct-domain.com", "ssh", []string{"vm.example.com"}, []net.IPNet{*network}, false)
 	if err == nil {
 		t.Error("Expected error for invalid domain, got nil")
 	}
