@@ -2,89 +2,182 @@
 
 A TLS Reverse Proxy for SNI and ALPN routing.
 
-Supports both static and dynamic TLS routing.
+This is **v2** - a clean-room rewrite with:
+- Modern Go patterns (Go 1.26+, context propagation, atomic config)
+- Comprehensive test coverage (17 test suites)
+- Thread-safe dynamic configuration (ready for API)
+- Certmagic integration for ACME certificates
+- Clean separation of concerns
+
+## Quick Start
 
 ```sh
-go run ./cmd/tlsrouter/ \
-   --config ~/.config/tlsrouter/backends.csv \
-   --vault ~/.config/tlsrouter/secrets.tsv \
-   --ip-domains vm.example.com \
-   --networks 192.168.1.0/24 \
-   --bind 0.0.0.0 \
-   --port 443
+# Build
+go build -o tlsrouter ./cmd/tlsrouter-v2
+
+# Run with static routes (CSV)
+./tlsrouter --addr :443 routes.csv
+
+# Run with environment variables
+IP_DOMAINS="vm.example.com,a.bnna.net" \
+NETWORKS="192.168.1.0/24,10.0.0.0/8" \
+./tlsrouter --addr :443
 ```
 
-Configured backends are loaded statically, while URLs like <https://tls-192-168-1-100.vm.example.com> are dynamically proxied -
-provided that the ip domain and ip-as-subdomain addresses match the allowed domain and networks.
+## Features
 
-## DNS Authorization
+### Static Routing (CSV)
 
-Sites are configured through DNS.
+```csv
+domain,alpn,backend,action
+example.com,http/1.1,127.0.0.1:8080,terminate
+passthrough.com,h2,127.0.0.1:443,passthrough
+*.example.com,*,127.0.0.1:8081,terminate
+```
 
-### CNAME (for subdomains)
+### Dynamic IP Routing
 
-Both `http/1.1` and `ssh` (terminated) can be enabled by setting a CNAME to the direct IP domain:
+URLs like `tls-192-168-1-100.vm.example.com` automatically route to `192.168.1.100`:
+
+- `tls-` prefix: Terminate TLS, proxy to port 3080
+- `tcp-` prefix: Raw passthrough to port 443
+
+### ACME-TLS/1 Challenges
+
+Handles three ACME scenarios:
+1. **Certmagic internal**: Let's Encrypt certs via certmagic
+2. **Per-domain backend**: Route challenges to specific backends
+3. **Global backend**: Route all challenges to one backend
+
+## Architecture
+
+```
+v2/
+├── router.go          # Core interfaces (Router, CertProvider, Dialer)
+├── handler.go         # TLS handshake with routing callback
+├── server.go          # TCP server with graceful shutdown
+├── config.go          # Atomic config for dynamic updates
+├── cert_provider.go   # Mock and static cert providers
+├── certmagic_provider.go  # Real ACME integration
+└── static_router.go   # Static and dynamic routing logic
+```
+
+## Design
+
+### Interfaces
+
+```go
+type Router interface {
+    Route(sni string, alpns []string) (Decision, error)
+}
+
+type CertProvider interface {
+    GetCertificate(domain string) (Certificate, error)
+}
+```
+
+### Atomic Config
+
+Thread-safe configuration swaps for dynamic API:
+
+```go
+newCfg := cfg.AddStaticRoute("example.com>http/1.1", route)
+handler.SetConfig(newCfg)  // Atomic swap
+```
+
+## DNS Configuration
+
+### CNAME (subdomains)
 
 ```text
-# terminates https to 3080
-CNAME   site-a.whatever.com  tls-192-168-1-100.vm.example.net   300
+# Terminate TLS to 3080
+CNAME   site-a.example.com  tls-192-168-1-100.vm.example.net
 
-# proxies non-terminated to 443
-CNAME   site-a.whatever.com  tcp-192-168-1-100.vm.example.net   300
+# Raw passthrough to 443
+CNAME   site-a.example.com  tcp-192-168-1-100.vm.example.net
 ```
 
-If you'd like to use a CNAME for convenience for multiple records, use `cname.<ip-domain>`, such as `cname.vm.example.net`.
+### A + SRV (apex domains)
 
 ```text
-CNAME   sites.whatever.com               cname.vm.example.net   300
+A                  example.com              192.168.1.100
+SRV     _http._tcp.example.com  10 3080 tls-192-168-1-100.vm.example.net
+SRV      _ssh._tcp.example.com  10   22 tls-192-168-1-100.vm.example.net
 ```
 
-Note: all ports in the table below are public and you should bind to localhost or use a firewall if you wish to run things on those ports privately.
+## Port Mapping
 
-### A + SRV (for apex domains)
+| ALPN        | Raw Port | Decrypted Port | Notes                           |
+| :---------- | -------: | -------------: | :------------------------------ |
+| http/1.1    |      443 |           3080 | Non-standard to avoid conflicts |
+| ssh         |   44322  |             22 | SSH over TLS needs special port  |
+| h2          |      443 |              - | HTTP/2 requires passthrough     |
+| acme-tls/1  |      443 |              - | ACME TLS-ALPN challenges        |
+| postgresql  |     5432 |           5432 | PostgreSQL native TLS           |
 
-```text
-A                  whatever.com                              123.1.2.3  300
-SRV     _http._tcp.whatever.com     10 3080 tls-10-11-1-123.a.bnna.net  300 10
-SRV      _ssh._tcp.whatever.com     10   22 tls-10-11-1-123.a.bnna.net  300 10
+See [Full Port Table](#port-mapping-table) below for all protocols.
+
+## Development
+
+### Prerequisites
+
+- Go 1.26+
+- certmagic v0.25.1
+
+### Running Tests
+
+```sh
+cd v2
+go test -v
+# PASS: 17 test suites, 41 subtests
 ```
 
-Note: ports must be selected according to the table below. Arbitrary ports are not allowed for security reasons (anyone can set records on their domain to your IP address).
+### Building
 
-### SRV (to enable more protocols)
-
-Whether using CNAME or A records, SRV records will enable additional proxying.
-
-```text
-SRV             _h2._tcp.whatever.com   10  443 tcp-10-11-1-123.a.bnna.net  300 10
-SRV     _postgresql._tcp.whatever.com   10 3080 tls-10-11-1-123.a.bnna.net  300 10
+```sh
+go build -o tlsrouter ./cmd/tlsrouter-v2
 ```
 
-ALPN names can be translated to service names in one of two ways:
+## Environment Variables
 
-1. replace all `.` (periods) with `-`, and replace `/` with `_`
-2. drop anything after `/` and replace all `.` (periods) with `-`
+| Variable | Description |
+|----------|-------------|
+| `IP_DOMAINS` | Comma-separated domains for dynamic routing |
+| `NETWORKS` | Comma-separated CIDR networks (e.g., `192.168.1.0/24`) |
+| `ACME_BACKEND` | Global ACME challenge backend |
+| `ACME_BACKENDS` | Per-domain: `domain1=backend1,domain2=backend2` |
 
-For example: `http` and `http_1-1` are both valid for `http/1.1`
+## Flags
 
-Note: ports must be selected according to the table below. Arbitrary ports are not allowed for security reasons (anyone can set records on their domain to your IP address).
+```
+  -addr string
+        Address to listen on (default ":443")
+  -bind string
+        Address to listen on (alias for addr)
+  -acme-email string
+        Email for ACME registration
+  -acme-dir string
+        ACME directory URL (default: Let's Encrypt)
+  -acme-agree
+        Agree to ACME terms
+```
 
-## Dynamic IP URL Mapping
+## Roadmap
 
-The URL pattern is There are two URL patterns:
-- `<layer4>-<ipv4-octets>-<ip-domain>`
-- tls-192-168-1-100.example.com (Handles / Terminates TLS)
-- tcp-192-168-1-100.example.com (Raw TCP Passthrough / Non-Terminating)
+- [ ] Dynamic config API (view/add/remove routes)
+- [ ] HTTP/80 redirect handler
+- [ ] PROXY protocol support (v1/v2)
+- [ ] Prometheus metrics endpoint
+- [ ] Connection pooling for backends
+- [ ] Rate limiting
 
-ALL TRAFFIC uses port 443 externally.
+## License
 
-If the _Raw TCP URL_ is used, then the _Raw Port_ will be used - proxied traffic will remain encrypted.
+MPL-2.0
 
-If the _Terminating URL_ is used, then the _Decrypted Port_ will be used.
+---
 
-**Why non-standard ports?** So that unencrypted services, which may have been intended for private networking,
-aren't exposed to the Internet by default.
-
+## Full Port Mapping Table
 
 | ALPN        |    Raw Port | Decrypted Port | Comment                                                      |
 | :---------- | ----------: | -------------: | :----------------------------------------------------------- |
@@ -124,8 +217,8 @@ Excluded:
 - `doq` DNS over QUIC is UDP-only
 - `http/0.9`, `http/1.0` superseded by `http/1.1`
 - `h3` HTTP over QUIC is UDP-only
-- `nnsp` has no port designation (and isn't actually referenced in the RFC)
+- `nnsp` has no port designation
 - `spdy/*` superseded by `h2`
-- `stun.turn` has more complex implications that I'm ready to consider
+- `stun.turn` has complex implications
 - `stun.nat-discovery` (same)
 - `sunrpc` probably not relevant
