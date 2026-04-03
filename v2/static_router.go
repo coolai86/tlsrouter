@@ -144,6 +144,14 @@ type DynamicRouter struct {
 
 	// Fallback router for non-matching requests
 	Fallback Router
+
+	// DNSCache for resolving CNAME/SRV to direct IP domains
+	// If nil, only direct IP domains are supported (no DNS resolution)
+	DNSCache *DNSCache
+
+	// Terminate indicates whether this router handles terminated connections
+	// (used for port validation in DNS resolution)
+	Terminate bool
 }
 
 // NewDynamicRouter creates a dynamic IP-based router.
@@ -155,7 +163,27 @@ func NewDynamicRouter(ipDomains []string, networks []net.IPNet) *DynamicRouter {
 		RawPorts:        defaultRawPorts,
 		// ACME passthrough backend - set this to route acme-tls/1 to a specific backend
 		ACMEPassthrough: "",
+		// Default to false for passthrough routing
+		Terminate: false,
 	}
+}
+
+// NewDynamicRouterTerminated creates a dynamic IP-based router for terminated connections.
+func NewDynamicRouterTerminated(ipDomains []string, networks []net.IPNet) *DynamicRouter {
+	return &DynamicRouter{
+		IPDomains:       ipDomains,
+		Networks:        networks,
+		TerminatedPorts: defaultTerminatedPorts,
+		RawPorts:        defaultRawPorts,
+		ACMEPassthrough: "",
+		Terminate:       true,
+	}
+}
+
+// WithDNSCache sets the DNS cache for CNAME/SRV resolution.
+func (r *DynamicRouter) WithDNSCache(cache *DNSCache) *DynamicRouter {
+	r.DNSCache = cache
+	return r
 }
 
 // Route implements Router.

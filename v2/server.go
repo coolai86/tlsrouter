@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -14,11 +15,17 @@ type Server struct {
 	Handler   *Handler
 	Addr      string
 	Listeners *ListenerRegistry // Loop detection
+	Stats     *StatsRegistry     // Connection statistics (optional)
 
-	listener net.Listener
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
+	// APIAddr is the address for the stats API (optional)
+	// If empty, no API server is started
+	APIAddr string
+
+	listener   net.Listener
+	apiServer  *http.Server
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // NewServer creates a new TLS routing server.
@@ -38,6 +45,18 @@ func NewServer(addr string, handler *Handler) *Server {
 	return s
 }
 
+// WithStats configures the stats registry.
+func (s *Server) WithStats(stats *StatsRegistry) *Server {
+	s.Stats = stats
+	return s
+}
+
+// WithAPI configures the stats API address.
+func (s *Server) WithAPI(addr string) *Server {
+	s.APIAddr = addr
+	return s
+}
+
 // ListenAndServe starts the server.
 func (s *Server) ListenAndServe() error {
 	var err error
@@ -52,6 +71,20 @@ func (s *Server) ListenAndServe() error {
 	s.Listeners.Register(actualAddr)
 
 	log.Printf("tlsrouter listening on %s (instance: %s)", actualAddr, s.Listeners.InstanceID())
+
+	// Start API server if configured
+	if s.APIAddr != "" && s.Stats != nil {
+		s.apiServer = &http.Server{
+			Addr:    s.APIAddr,
+			Handler: NewAPIServer(s.Stats),
+		}
+		s.wg.Go(func() {
+			log.Printf("stats API listening on %s", s.APIAddr)
+			if err := s.apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("API server error: %v", err)
+			}
+		})
+	}
 
 	for {
 		conn, err := s.listener.Accept()
@@ -83,6 +116,12 @@ func (s *Server) ListenAndServe() error {
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.cancel()
+
+	// Shutdown API server if running
+	if s.apiServer != nil {
+		_ = s.apiServer.Shutdown(ctx)
+	}
+
 	if s.listener != nil {
 		// Unregister listener
 		if s.Listeners != nil && s.listener != nil {
