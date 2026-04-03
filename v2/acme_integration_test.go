@@ -2,12 +2,10 @@ package tlsrouter
 
 import (
 	"context"
-	"crypto/tls"
-	"fmt"
-	"net"
 	"os"
 	"testing"
-	"time"
+
+	"github.com/caddyserver/certmagic"
 )
 
 // TestACMESharedDomainIntegration tests the real-world scenario where

@@ -46,14 +46,31 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 		},
 	})
 
-	// Create ACME issuer
-	issuer := certmagic.ACMEIssuer{
+	// Create base config first (needed for issuer)
+	magic := certmagic.New(cache, certmagic.Config{
+		Storage: storage,
+		OnEvent: func(ctx context.Context, eventName string, data map[string]any) error {
+			if eventName == "cert_obtaining" {
+				if id, ok := data["identifier"]; ok {
+					fmt.Printf("Obtaining certificate for %s\n", id)
+				}
+			} else if eventName == "cert_obtained" {
+				if id, ok := data["identifier"]; ok {
+					fmt.Printf("Certificate obtained for %s\n", id)
+				}
+			}
+			return nil
+		},
+	})
+
+	// Create ACME issuer using NewACMEIssuer (properly initializes internal state)
+	issuer := certmagic.NewACMEIssuer(magic, certmagic.ACMEIssuer{
 		CA:                      cfg.DirectoryURL,
 		Email:                   cfg.Email,
 		Agreed:                  cfg.Agreed,
 		DisableHTTPChallenge:    cfg.DisableHTTPChallenge,
 		DisableTLSALPNChallenge: cfg.DisableTLSALPNChallenge,
-	}
+	})
 
 	// Add DNS-01 solver if provider specified
 	if cfg.DNSProvider != nil {
@@ -68,21 +85,8 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 		}
 	}
 
-	// Create certmagic config
-	magic := certmagic.New(cache, certmagic.Config{
-		Storage: storage,
-		Issuers: []certmagic.Issuer{&issuer},
-		OnEvent: func(ctx context.Context, eventName string, data map[string]any) error {
-			if eventName == "cert_obtaining" {
-				domain := data["identifier"].(string)
-				fmt.Printf("Obtaining certificate for %s\n", domain)
-			} else if eventName == "cert_obtained" {
-				domain := data["identifier"].(string)
-				fmt.Printf("Certificate obtained for %s\n", domain)
-			}
-			return nil
-		},
-	})
+	// Set the issuer on the config
+	magic.Issuers = []certmagic.Issuer{issuer}
 
 	// Enable on-demand (controlled via API)
 	magic.OnDemand = &certmagic.OnDemandConfig{
