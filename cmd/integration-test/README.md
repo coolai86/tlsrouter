@@ -27,6 +27,10 @@ Shared Storage (for HA):
     └── example.com/
 ```
 
+## Real-World Test Domain
+
+Uses `tcp-10-11-8-202.a.bnna.net` which points to `10.11.8.202:443`. A request to this domain on port 443 will route to TLSrouter A, which can passthrough to TLSrouter B on port 8443.
+
 ## Prerequisites
 
 1. **DuckDNS Account** (free): https://www.duckdns.org/
@@ -41,7 +45,7 @@ Shared Storage (for HA):
 
 ```bash
 # Required
-export TEST_DOMAIN="your-subdomain.duckdns.org"
+export TEST_DOMAIN="tcp-10-11-8-202.a.bnna.net"
 export DUCKDNS_TOKEN="your-duckdns-token"
 
 # Optional (defaults provided)
@@ -51,24 +55,37 @@ export STORAGE_DIR="/tmp/tlsrouter-acme-test"
 
 ## Running Tests
 
-### Quick Test (Unit Tests)
+### Unit Tests (No Network)
 
 ```bash
 cd /root/dev/projects/tlsrouter/worktrees/tron-tls/v2
 go test -v -run TestACME
 ```
 
-### Integration Test (Full ACME)
+### DuckDNS Integration Test
+
+Tests certificate issuance via DNS-01 challenge:
 
 ```bash
 cd /root/dev/projects/tlsrouter/worktrees/tron-tls
 
-# Set environment
-export TEST_DOMAIN="test-acme.duckdns.org"
+export TEST_DOMAIN="coolai86.duckdns.org"
 export DUCKDNS_TOKEN="your-token-here"
 
-# Run integration test
-go test -v -run TestACMESharedDomainIntegration -tags=integration ./v2/
+go test -v -run TestACMEDuckDNSIntegration -tags=integration ./v2/ -timeout 5m
+```
+
+### Full Passthrough Integration Test
+
+Tests ACME-TLS/1 passthrough between two TLSrouter instances:
+
+```bash
+cd /root/dev/projects/tlsrouter/worktrees/tron-tls
+
+export TEST_DOMAIN="tcp-10-11-8-202.a.bnna.net"
+export DUCKDNS_TOKEN="your-token-here"
+
+go test -v -run TestACMETLS1PassthroughIntegration -tags=integration ./v2/ -timeout 30m
 ```
 
 ### Standalone Test Runner
