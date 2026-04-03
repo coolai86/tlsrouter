@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
@@ -29,51 +32,58 @@ var (
 	date    = "0001-01-01T00:00:00Z"
 )
 
-func printVersion() {
-	fmt.Fprintf(os.Stderr, "%s v%s %s (%s)\n", name, version, commit[:7], date)
-	fmt.Fprintf(os.Stderr, "Copyright (C) %s %s\n", licenseYear, licenseOwner)
-	fmt.Fprintf(os.Stderr, "Licensed under the %s license\n", licenseType)
+func printVersion(w io.Writer) {
+	fmt.Fprintf(w, "%s v%s %s (%s)\n", name, version, commit[:7], date)
+	fmt.Fprintf(w, "Copyright (C) %s %s\n", licenseYear, licenseOwner)
+	fmt.Fprintf(w, "Licensed under the %s license\n", licenseType)
+}
+
+func printUsage(fs *flag.FlagSet) {
+	printVersion(os.Stdout)
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintf(os.Stdout, "Usage: %s [options] [routes.csv]\n\n", name)
+	fmt.Fprintln(os.Stdout, "Options:")
+	fs.SetOutput(os.Stdout)
+	fs.PrintDefaults()
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Environment Variables:")
+	fmt.Fprintln(os.Stdout, "  IP_DOMAINS     Comma-separated list of IP domains for dynamic routing")
+	fmt.Fprintln(os.Stdout, "  NETWORKS       Comma-separated list of allowed CIDR networks")
+	fmt.Fprintln(os.Stdout, "  ACME_BACKEND   Global ACME challenge backend (host:port)")
+	fmt.Fprintln(os.Stdout, "  ACME_BACKENDS  Per-domain ACME backends (domain1=backend1,domain2=backend2)")
 }
 
 func main() {
-	// Define flags
-	addr := flag.String("addr", ":443", "Address to listen on")
-	bind := flag.String("bind", ":443", "Address to listen on (alias for addr)")
-	showVersion := flag.Bool("version", false, "Print version and exit")
-	showHelp := flag.Bool("help", false, "Show usage")
-
-	// ACME config
-	acmeEmail := flag.String("acme-email", "", "Email for ACME registration")
-	acmeDir := flag.String("acme-dir", "", "ACME directory URL (default: Let's Encrypt)")
-	acmeAgree := flag.Bool("acme-agree", false, "Agree to ACME terms")
-
-	flag.Parse()
-
-	if *showVersion {
-		printVersion()
-		os.Exit(0)
+	// Handle version and help before flag parsing
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-V", "-version", "--version", "version":
+			printVersion(os.Stdout)
+			os.Exit(0)
+		case "help", "-help", "--help":
+			fs := flag.NewFlagSet(name, flag.ContinueOnError)
+			defineFlags(fs)
+			printUsage(fs)
+			os.Exit(0)
+		}
 	}
 
-	if *showHelp {
-		printVersion()
-		fmt.Fprintf(os.Stderr, "\nUsage: %s [options] [routes.csv]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nEnvironment Variables:\n")
-		fmt.Fprintf(os.Stderr, "  IP_DOMAINS     Comma-separated list of IP domains for dynamic routing\n")
-		fmt.Fprintf(os.Stderr, "  NETWORKS       Comma-separated list of allowed CIDR networks\n")
-		os.Exit(0)
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Usage = func() {
+		printUsage(fs)
 	}
 
-	// Determine bind address
-	listenAddr := *addr
-	if *bind != ":443" {
-		listenAddr = *bind
+	cfg := defineFlags(fs)
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Load configuration
-	cfg, err := loadConfig(listenAddr, *acmeEmail, *acmeDir, *acmeAgree)
-	if err != nil {
+	if err := loadConfig(fs, cfg); err != nil {
 		log.Fatalf("config error: %v", err)
 	}
 
@@ -108,14 +118,14 @@ func main() {
 		},
 	}
 
-	// Set initial config (atomic) - convert to tlsrouter.Config
+	// Set initial config (atomic)
 	routerCfg := &tlsrouter.Config{
-		StaticRoutes:  cfg.StaticRoutes,
-		IPDomains:     cfg.IPDomains,
-		Networks:      cfg.Networks,
+		StaticRoutes:    cfg.StaticRoutes,
+		IPDomains:       cfg.IPDomains,
+		Networks:        cfg.Networks,
 		ACMEPassthrough: cfg.ACMEPassthrough,
-		ACMEBackends:  cfg.ACMEBackends,
-		Certmagic:     cfg.Certmagic,
+		ACMEBackends:    cfg.ACMEBackends,
+		Certmagic:       cfg.Certmagic,
 	}
 	handler.SetConfig(routerCfg)
 
@@ -124,6 +134,7 @@ func main() {
 
 	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
+	// Note: syscall.SIGTERM = 15, syscall.SIGINT = 2
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start server in goroutine
@@ -150,41 +161,61 @@ func main() {
 	}
 }
 
+// config holds all configuration.
 type config struct {
-	Addr          string
-	StaticRoutes  map[string]tlsrouter.StaticRoute
-	IPDomains     []string
-	Networks      []net.IPNet
+	Addr            string
+	StaticRoutes    map[string]tlsrouter.StaticRoute
+	IPDomains       []string
+	Networks        []net.IPNet
 	ACMEPassthrough string
-	ACMEBackends  map[string]string
-	Certmagic     tlsrouter.CertmagicConfig
+	ACMEBackends    map[string]string
+	Certmagic       tlsrouter.CertmagicConfig
+
+	// Parsed from flags
+	csvPath   string
+	acmeEmail string
+	acmeDir   string
+	acmeAgree bool
 }
 
-func loadConfig(addr, acmeEmail, acmeDir string, acmeAgree bool) (*config, error) {
+// defineFlags creates flags and returns config with defaults.
+func defineFlags(fs *flag.FlagSet) *config {
 	cfg := &config{
-		Addr:          addr,
-		IPDomains:     []string{},
-		Networks:      []net.IPNet{},
-		StaticRoutes:  make(map[string]tlsrouter.StaticRoute),
-		ACMEBackends:  make(map[string]string),
+		StaticRoutes: make(map[string]tlsrouter.StaticRoute),
+		ACMEBackends: make(map[string]string),
 		Certmagic: tlsrouter.CertmagicConfig{
-			Email:                   acmeEmail,
-			DirectoryURL:            acmeDir,
-			Agreed:                  acmeAgree,
-			DisableHTTPChallenge:    true,  // Usually true for TLS routers
-			DisableTLSALPNChallenge: false, // Allow TLS-ALPN challenges
+			DisableHTTPChallenge:    true,
+			DisableTLSALPNChallenge: false,
 		},
 	}
 
-	// Load static routes from CSV
-	if csvPath := flag.Arg(0); csvPath != "" {
+	fs.StringVar(&cfg.Addr, "addr", ":443", "Address to listen on")
+	// -bind is an alias for -addr (kept for backward compatibility)
+	fs.StringVar(&cfg.Addr, "bind", ":443", "Address to listen on (alias for addr)")
+	// Note: -h is reserved for --human-readable (not --help)
+	// Note: -v is reserved for --verbose (not --version)
+
+	fs.StringVar(&cfg.csvPath, "routes", "", "Path to routes CSV file")
+	fs.StringVar(&cfg.acmeEmail, "acme-email", "", "Email for ACME registration")
+	fs.StringVar(&cfg.acmeDir, "acme-dir", "", "ACME directory URL (default: Let's Encrypt)")
+	fs.BoolVar(&cfg.acmeAgree, "acme-agree", false, "Agree to ACME terms")
+
+	return cfg
+}
+
+// loadConfig loads configuration from file and environment.
+func loadConfig(fs *flag.FlagSet, cfg *config) error {
+	// Load static routes from CSV (positional arg takes precedence over -routes flag)
+	csvPath := fs.Arg(0)
+	if csvPath == "" {
+		csvPath = cfg.csvPath
+	}
+	if csvPath != "" {
 		routes, err := loadStaticRoutes(csvPath)
 		if err != nil {
-			return nil, fmt.Errorf("loading static routes: %w", err)
+			return fmt.Errorf("loading static routes: %w", err)
 		}
-		for k, v := range routes {
-			cfg.StaticRoutes[k] = v
-		}
+		maps.Copy(cfg.StaticRoutes, routes)
 	}
 
 	// Load dynamic config from env
@@ -194,7 +225,7 @@ func loadConfig(addr, acmeEmail, acmeDir string, acmeAgree bool) (*config, error
 	if networks := os.Getenv("NETWORKS"); networks != "" {
 		nets, err := parseNetworkList(networks)
 		if err != nil {
-			return nil, fmt.Errorf("parsing networks: %w", err)
+			return fmt.Errorf("parsing networks: %w", err)
 		}
 		cfg.Networks = nets
 	}
@@ -207,7 +238,7 @@ func loadConfig(addr, acmeEmail, acmeDir string, acmeAgree bool) (*config, error
 	// Load per-domain ACME backends
 	if acmeBackends := os.Getenv("ACME_BACKENDS"); acmeBackends != "" {
 		// Format: domain1=backend1,domain2=backend2
-		for _, pair := range strings.Split(acmeBackends, ",") {
+		for pair := range strings.SplitSeq(acmeBackends, ",") {
 			parts := strings.SplitN(pair, "=", 2)
 			if len(parts) == 2 {
 				cfg.ACMEBackends[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
@@ -215,9 +246,15 @@ func loadConfig(addr, acmeEmail, acmeDir string, acmeAgree bool) (*config, error
 		}
 	}
 
-	return cfg, nil
+	// Set certmagic config from flags
+	cfg.Certmagic.Email = cfg.acmeEmail
+	cfg.Certmagic.DirectoryURL = cfg.acmeDir
+	cfg.Certmagic.Agreed = cfg.acmeAgree
+
+	return nil
 }
 
+// buildRouter creates the router from config.
 func buildRouter(cfg *config) (tlsrouter.Router, error) {
 	routers := []tlsrouter.Router{}
 
@@ -243,9 +280,10 @@ func buildRouter(cfg *config) (tlsrouter.Router, error) {
 	return &tlsrouter.LayeredRouter{Routers: routers}, nil
 }
 
+// parseStringList parses comma-separated string list.
 func parseStringList(s string) []string {
 	var result []string
-	for _, item := range strings.Split(s, ",") {
+	for item := range strings.SplitSeq(s, ",") {
 		item = strings.TrimSpace(item)
 		if item != "" {
 			result = append(result, item)
@@ -254,9 +292,10 @@ func parseStringList(s string) []string {
 	return result
 }
 
+// parseNetworkList parses comma-separated CIDR networks.
 func parseNetworkList(s string) ([]net.IPNet, error) {
 	var result []net.IPNet
-	for _, item := range strings.Split(s, ",") {
+	for item := range strings.SplitSeq(s, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			continue
@@ -270,6 +309,7 @@ func parseNetworkList(s string) ([]net.IPNet, error) {
 	return result, nil
 }
 
+// loadStaticRoutes loads routes from CSV file.
 func loadStaticRoutes(path string) (map[string]tlsrouter.StaticRoute, error) {
 	file, err := os.Open(path)
 	if err != nil {
