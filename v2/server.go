@@ -11,8 +11,9 @@ import (
 
 // Server is a TLS routing server.
 type Server struct {
-	Handler *Handler
-	Addr    string
+	Handler   *Handler
+	Addr      string
+	Listeners *ListenerRegistry // Loop detection
 
 	listener net.Listener
 	wg       sync.WaitGroup
@@ -23,12 +24,18 @@ type Server struct {
 // NewServer creates a new TLS routing server.
 func NewServer(addr string, handler *Handler) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Server{
+	s := &Server{
 		Handler: handler,
 		Addr:    addr,
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+	// Create listener registry if handler doesn't have one
+	if handler.Listeners == nil {
+		handler.Listeners = NewListenerRegistry()
+	}
+	s.Listeners = handler.Listeners
+	return s
 }
 
 // ListenAndServe starts the server.
@@ -40,7 +47,11 @@ func (s *Server) ListenAndServe() error {
 	}
 	defer s.listener.Close()
 
-	log.Printf("tlsrouter listening on %s", s.Addr)
+	// Register this listener for loop detection
+	actualAddr := s.listener.Addr().String()
+	s.Listeners.Register(actualAddr)
+
+	log.Printf("tlsrouter listening on %s (instance: %s)", actualAddr, s.Listeners.InstanceID())
 
 	for {
 		conn, err := s.listener.Accept()
@@ -61,7 +72,7 @@ func (s *Server) ListenAndServe() error {
 			defer cancel()
 
 			if err := s.Handler.Handle(connCtx, conn); err != nil {
-				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
+				if !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) && !IsLoopError(err) {
 					log.Printf("connection error: %v", err)
 				}
 			}
@@ -73,6 +84,10 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.cancel()
 	if s.listener != nil {
+		// Unregister listener
+		if s.Listeners != nil && s.listener != nil {
+			s.Listeners.Unregister(s.listener.Addr().String())
+		}
 		_ = s.listener.Close()
 	}
 	done := make(chan struct{})

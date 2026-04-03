@@ -1,134 +1,67 @@
 # TLSrouter v2 Status
 
 **Branch:** `tron-tls`
-**Last Updated:** 2026-04-03
-**Status:** Integration tests passing ✅ | Stats tracking implemented ✅
+**Updated:** 2026-04-03
+**Status:** All tests passing ✅ | Stats tracking implemented ✅ | PR open (#5)
 
-## Test Results
+## Directories
 
-### ACME-TLS/1 Integration Test (PASSED)
+| Path | Purpose |
+|------|---------|
+| `/root/dev/projects/tlsrouter/worktrees/tron-tls/` | Primary workspace |
+| `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/` | Clean-room implementation |
+| `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/proxyproto/` | PROXY protocol v1/v2 |
+| `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/tun/` | HTTP tunnel listener |
 
-```
---- PASS: TestACMETLS1PassthroughIntegration (11.58s)
-    --- PASS: TLSrouter A obtains SSH cert via ACME-TLS/1
-    --- PASS: TLSrouter B obtains HTTP cert via ACME-TLS/1 passthrough
-    --- PASS: Verify ACME-TLS/1 passthrough configuration
-    --- PASS: Certificates are independent (8.58s)
-    --- PASS: Simulate ACME-TLS/1 challenge passthrough
-```
+## Current State
 
-### DuckDNS Integration Test (PASSED)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Core routing (Router, Handler) | ✅ Complete | Static + dynamic + layered |
+| ACME-TLS/1 handling | ✅ Complete | Challenge priority + passthrough |
+| Certmagic integration | ✅ Complete | Auto-cert with Let's Encrypt |
+| Security fixes | ✅ Complete | TLS 1.2+, dial timeout, X-Forwarded |
+| PROXY protocol | ✅ Complete | v1 and v2 support |
+| Stats tracking | ✅ Complete | Connection + route aggregates |
+| HTTP API | ✅ Complete | `/api/connections`, `/api/routes`, SSE |
+| Retention logging | ✅ Complete | JSONL with rotation + gzip |
+| Stats wired into Server | ⏳ TODO | Need `Server.Stats` field |
+| HTTP/80 redirect | ⏳ TODO | From original code |
+| Prometheus metrics | ⏳ TODO | Future work |
 
-```
---- PASS: TestACMEDuckDNSIntegration (7.68s)
-    --- PASS: No challenge before managing
-    --- PASS: Manage domain
-    --- PASS: Domain is managed
-    --- PASS: Get certificate
-    --- PASS: Unmanage domain
-```
+## Recent Commits
 
-### Unit Tests (ALL PASSING)
-
-```
-=== RUN   TestStaticRouter_ACME
---- PASS: TestStaticRouter_ACME (0.00s)
-=== RUN   TestDynamicRouter_ACME
---- PASS: TestDynamicRouter_ACME (0.00s)
-=== RUN   TestHandler_ACMECases
---- PASS: TestHandler_ACMECases (0.00s)
-=== RUN   TestHandler_ACMEDetectionOrder
---- PASS: TestHandler_ACMEDetectionOrder (0.00s)
-=== RUN   TestHandler_ACMEWithMixedALPN
---- PASS: TestHandler_ACMEWithMixedALPN (0.00s)
-=== RUN   TestHandler_ConfigAtomicSwap
---- PASS: TestHandler_ConfigAtomicSwap (0.00s)
-=== RUN   TestHandler_PostHandshakeACMEDetection
---- PASS: TestHandler_PostHandshakeACMEDetection (0.00s)
-=== RUN   TestHandler_ACMELayeredRouting
---- PASS: TestHandler_ACMELayeredRouting (0.00s)
-=== RUN   TestCertmagicCertProvider_HasActiveChallenge
---- PASS: TestCertmagicCertProvider_HasActiveChallenge (0.00s)
-=== RUN   TestACMEChallengePriority
---- PASS: TestACMEChallengePriority (0.00s)
-=== RUN   TestACMESharedDomain
---- PASS: TestACMESharedDomain (0.00s)
-PASS
-ok  	github.com/bnnanet/tlsrouter/v2	0.006s
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     TLSrouter v2                             │
-├─────────────────────────────────────────────────────────────┤
-│  Handler (handler.go)                                       │
-│  ├── GetConfigForClient (routing callback)                  │
-│  ├── ACME-TLS/1 detection (ALPN="acme-tls/1")              │
-│  └── Post-handshake ACME check                              │
-├─────────────────────────────────────────────────────────────┤
-│  Router (router.go, static_router.go)                       │
-│  ├── Static routes (domain>alpn → backend)                  │
-│  ├── Dynamic IP routing (IP-in-hostname)                    │
-│  └── LayeredRouter (static → dynamic fallback)              │
-├─────────────────────────────────────────────────────────────┤
-│  Config (config.go)                                         │
-│  ├── Atomic config swaps (atomic.Value)                     │
-│  ├── ACMEBackends map (per-domain ACME routing)             │
-│  └── ACMEPassthrough (global ACME backend)                  │
-├─────────────────────────────────────────────────────────────┤
-│  CertProvider (cert_provider.go)                            │
-│  ├── MockCertProvider (testing)                             │
-│  ├── StaticCertProvider (static certs)                      │
-│  └── CertmagicCertProvider (real ACME)                      │
-├─────────────────────────────────────────────────────────────┤
-│  Server (server.go)                                         │
-│  ├── TCP listener with graceful shutdown                    │
-│  └── Per-connection context with 5-min timeout              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Files
-
-| File | Purpose | Tests |
-|------|---------|-------|
-| `v2/router.go` | Core interfaces (Router, CertProvider, Dialer) | ✅ |
-| `v2/handler.go` | TLS handshake with routing callback + stats tracking | ✅ |
-| `v2/server.go` | TCP server with graceful shutdown | ✅ |
-| `v2/config.go` | Atomic config wrapper | ✅ |
-| `v2/cert_provider.go` | Mock and static cert providers | ✅ |
-| `v2/certmagic_provider.go` | Real ACME integration | ✅ |
-| `v2/static_router.go` | Static + dynamic routing | ✅ |
-| `v2/stats.go` | **NEW** - Connection and route statistics | ✅ |
-| `v2/api.go` | **NEW** - HTTP API + SSE streaming | ✅ |
-| `v2/retention.go` | **NEW** - JSONL retention logging | ✅ |
-| `v2/STATS_DESIGN.md` | **NEW** - Stats design doc | - |
-| `v2/acme_test.go` | ACME unit tests | ✅ |
-| `v2/handler_test.go` | Handler tests | ✅ |
-| `v2/handler_acme_test.go` | ACME handler tests | ✅ |
-| `v2/certmagic_acme_test.go` | Certmagic tests | ✅ |
-| `v2/acme_duckdns_test.go` | DuckDNS integration test | ✅ |
-| `v2/acme_passthrough_test.go` | ACME-TLS/1 passthrough test | ✅ |
-
-## Commits
-
-| Commit | Description |
-|--------|-------------|
+| Hash | Message |
+|------|---------|
+| `ff931e2` | feat(stats): Add connection statistics, HTTP API, and retention logging |
+| `11c60fe` | Security fixes: TLS MinVersion, dial timeout, HTTP proxy with X-Forwarded headers |
+| `54cd825` | docs: Add STATUS.md and DECISIONS.md |
 | `44dd432` | test(acme-tls1): Full integration test PASSED |
-| `2d3f122` | fix(test): Use ACME-TLS/1 for passthrough test |
-| `b60c321` | test(acme): Add ACME-TLS/1 passthrough integration test |
-| `3ea3a5a` | test(acme): Add DuckDNS integration test |
-| `b5946bc` | feat(acme): Check active challenge before ACME passthrough |
-| `c1e340e` | v2: High-priority fixes - Context & concurrency |
-| `98410f0` | v2: Add certmagic ACME integration |
-| `f581e22` | v2: Clean-room TLS router implementation |
+| `2d3f122` | fix(test): Use ACME-TLS/1 (TLS-ALPN-01) for passthrough integration test |
+
+## Unpushed Commits
+
+1 commit ahead of `origin/tron-tls`:
+- `ff931e2` - Stats implementation (not yet pushed)
 
 ## Next Steps
 
-- [ ] Integrate StatsRegistry into Server (add Stats field)
-- [ ] Wire APIServer into Server startup
-- [ ] Add HTTP/80 redirect handler (from original code)
-- [ ] Metrics/Prometheus endpoint
-- [ ] Connection pooling for backends
-- [ ] Rate limiting per backend
+1. [ ] Push stats commit to origin
+2. [ ] Wire `StatsRegistry` into `Server` (add `Stats` field to `Server` struct)
+3. [ ] Wire `APIServer` into Server startup (admin HTTP endpoint)
+4. [ ] Add HTTP/80 redirect handler
+5. [ ] Add Prometheus metrics endpoint
+6. [ ] Add connection pooling for backends
+7. [ ] Add rate limiting per backend
+
+## Open PR
+
+- https://github.com/coolai86/tlsrouter/pull/5
+
+## Blockers
+
+None - ready to continue.
+
+## Test Results
+
+All unit tests pass. Integration tests require environment setup (TEST_DOMAIN, DUCKDNS_TOKEN).

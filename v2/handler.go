@@ -45,6 +45,10 @@ type Handler struct {
 	// Stats tracks connection statistics.
 	// If nil, stats are not tracked.
 	Stats *StatsRegistry
+
+	// Listeners tracks listening addresses for loop detection.
+	// If nil, loop detection is disabled.
+	Listeners *ListenerRegistry
 }
 
 // KeepAliveConfig configures TCP keepalive for backend connections.
@@ -277,6 +281,17 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 }
 
 func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decision Decision) error {
+	// Loop detection: check if backend is one of our listeners
+	if h.Listeners != nil {
+		if err := h.Listeners.CheckLoop(decision.Backend, "", 0); err != nil {
+			h.logError("loop detected", "error", err, "backend", decision.Backend)
+			if h.Stats != nil {
+				h.Stats.CloseConnection(tracking.statsID, CloseReasonError)
+			}
+			return err
+		}
+	}
+
 	start := time.Now()
 	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
@@ -317,6 +332,14 @@ func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decisio
 // proxyHTTP proxies a terminated TLS connection to an HTTP backend.
 // For HTTP ALPNs, this uses httputil.ReverseProxy with proper X-Forwarded headers.
 func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, decision Decision) error {
+	// Loop detection: check if backend is one of our listeners
+	if h.Listeners != nil {
+		if err := h.Listeners.CheckLoop(decision.Backend, "", 0); err != nil {
+			h.logError("loop detected", "error", err, "backend", decision.Backend)
+			return err
+		}
+	}
+
 	// For HTTP ALPNs, use proper HTTP proxy with X-Forwarded headers
 	if decision.ALPN == "http/1.1" || decision.ALPN == "h2" || decision.ALPN == "h2c" {
 		return h.proxyHTTPWithForwardedHeaders(ctx, tlsConn, decision)
@@ -379,6 +402,34 @@ func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tl
 			// Add X-Forwarded-ALPN for backend to know negotiated protocol
 			if decision.ALPN != "" {
 				r.Out.Header.Set("X-Forwarded-ALPN", decision.ALPN)
+			}
+
+			// Add loop detection headers
+			if h.Listeners != nil {
+				// Parse incoming hop info
+				incoming := ParseHopInfo(r.In.Header)
+				// Check for loop before proxying
+				if err := h.Listeners.CheckLoop(decision.Backend, incoming.ID, incoming.Hops); err != nil {
+					h.logError("loop detected in HTTP proxy", "error", err, "backend", decision.Backend)
+					// The error will be handled by ErrorHandler
+					r.Out.Header.Set(HeaderTLSrouterID, "loop-detected")
+					return
+				}
+				// Add hop headers
+				r.Out.Header.Set(HeaderTLSrouterID, string(h.Listeners.InstanceID()))
+				hops := incoming.Hops + 1
+				r.Out.Header.Set(HeaderTLSrouterHops, intToStr(hops))
+				// Propagate Via chain
+				via := incoming.Via
+				via = append(via, h.Listeners.InstanceID())
+				viaStr := ""
+				for i, id := range via {
+					if i > 0 {
+						viaStr += ","
+					}
+					viaStr += string(id)
+				}
+				r.Out.Header.Set(HeaderTLSrouterVia, viaStr)
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

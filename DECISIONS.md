@@ -321,6 +321,121 @@ type trackingConn struct {
 
 ---
 
+## Connection Statistics & Monitoring
+
+### Decision: StatsRegistry with atomic updates
+
+**Problem:** Need real-time visibility into connections without blocking hot path.
+
+**Solution:** `sync.Map` for connections, atomic counters for bytes:
+
+```go
+type StatsRegistry struct {
+    connections sync.Map // string -> *ConnectionStats
+    routes      sync.Map // string -> *RouteAggregate
+    subscribers sync.Map // string -> chan StatsEvent
+}
+```
+
+**Memory:** ~200 bytes per connection. 10k connections = ~2MB.
+
+**Rate calculation:** Global 1-second ticker walks all connections, calculates deltas. No per-connection rate storage.
+
+---
+
+### Decision: Per-connection and per-route statistics
+
+**ConnectionStats** tracks:
+- Identity: ID, SrcAddr, DstAddr
+- Routing: SNI, ALPN, RouteKey, RouteType, PROXYProto, Terminated, BackendAddr
+- TLS: TLSVersion, CipherSuite, CertIssuer (terminated only)
+- Timing: Started, LastRead, LastWrite, BackendMs
+- Bytes: BytesIn, BytesOut, BackendBytesIn, BackendBytesOut
+- Rates: RateInBps, RateOutBps (5s rolling)
+- State: State, CloseReason, Errors
+
+**RouteAggregate** tracks:
+- Totals: TotalConns, ActiveConns, TotalBytesIn, TotalBytesOut
+- Rates: RateInBps, RateOutBps, ConnsPerSec
+- Health: BackendErrors, AvgLatencyMs
+
+---
+
+### Decision: HTTP API + SSE for real-time streaming
+
+**Endpoints:**
+- `GET /api/connections` — List all active connections
+- `GET /api/connections/:id` — Single connection details
+- `POST /api/connections/:id/close` — Admin close connection
+- `GET /api/routes` — Route aggregates
+- `GET /api/stats/stream` — SSE real-time updates
+
+**SSE Events:**
+- `connect` — New connection established
+- `update` — Periodic bandwidth update
+- `disconnect` — Connection closed
+- `route` — Route aggregate update
+
+---
+
+### Decision: Optional JSONL retention
+
+**Format:** One JSON object per line (JSONL)
+
+**Rotation:** Daily files: `connections-2026-04-03.jsonl`
+
+**Compression:** Gzip after rotation (configurable)
+
+**Retention:** 7 days default (configurable)
+
+---
+
+## Loop Detection
+
+### Decision: Listener registry + hop headers
+
+**Problem:** Proxy chains can create loops:
+1. **Self-routing** — API/UI requests accidentally going to backends
+2. **Proxy loops** — TLSrouter A → B → A (or longer chains)
+
+**Solution:** Two-layer detection:
+
+**Layer 1: Socket-level (all traffic)**
+```go
+type ListenerRegistry struct {
+    listeners map[string]struct{} // "host:port" -> exists
+    instance  InstanceID           // UUID at startup
+}
+
+func (r *ListenerRegistry) CheckLoop(backendAddr string, incomingID InstanceID, hops int) error {
+    // 1. Backend matches our listeners → direct loop
+    // 2. Backend host matches our listeners → same host, different port
+    // 3. Incoming ID matches our instance → chain loop
+    // 4. Hop count exceeded (default: 10) → too many hops
+}
+```
+
+**Layer 2: Header-level (terminated HTTP only)**
+```go
+// Headers added to outgoing requests:
+X-Tlsrouter-Id:    <instance-uuid>
+X-Tlsrouter-Hops:  <incremented-count>
+X-Tlsrouter-Via:   <comma-separated-instance-ids>
+```
+
+**For passthrough (encrypted TCP):**
+- Can't add headers — relies on socket-level detection only
+- Check backend address against listener registry before dialing
+
+**Implementation:**
+- `loop.go` — ListenerRegistry, CheckLoop, HopInfo parsing
+- `handler.go` — Check before dialing backend in `tunnelTCP()` and `proxyHTTP()`
+- `server.go` — Register listeners on startup
+
+**Trade-off:** Passthrough can't detect chains through other proxies (only loops back to self). HTTP traffic can detect longer chains via hop headers.
+
+---
+
 ## Integration Test Results
 
 ### ACME-TLS/1 Passthrough Test (PASSED)

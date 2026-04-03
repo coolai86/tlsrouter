@@ -20,10 +20,10 @@
 - Context propagation for timeouts and cancellation
 
 **Key directories:**
-- `v2/` — All new implementation code
-- `v2/*.go` — Core components (router, handler, server, config)
-- `v2/*_test.go` — Unit tests (mock-based, no network)
-- `v2/*_integration_test.go` — Integration tests (real ACME, requires -tags=integration)
+- `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/` — All new implementation code
+- `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/*.go` — Core components (router, handler, server, config, certmagic_provider, static_router)
+- `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/*_test.go` — Unit tests (mock-based, no network)
+- `/root/dev/projects/tlsrouter/worktrees/tron-tls/v2/*_integration_test.go` — Integration tests (real ACME, requires -tags=integration)
 
 **Current models:**
 - Primary: `ollama/glm-4.7` (128k context)
@@ -31,11 +31,12 @@
 - High-context option: `ollama/minimax-m2.7` (200k context) — use if hitting limits
 
 **On session start:**
-1. Read `STATUS.md` — current project state
-2. Read `DECISIONS.md` — active design decisions
-3. Check `DECISIONS.d/` — archived decisions if needed
-4. Read recent `memory/YYYY-MM-DD.md` files (today + yesterday)
-5. Check git status: `git status` and `git log --oneline -5`
+1. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/AGENT.md` — this file (your role and project goals)
+2. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/STATUS.md` — current project state
+3. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/DECISIONS.md` — active design decisions
+4. Check `/root/dev/projects/tlsrouter/worktrees/tron-tls/DECISIONS.d/` — archived decisions if needed
+5. Read recent `/root/.openclaw/workspace/memory/YYYY-MM-DD.md` files (today + yesterday)
+6. Check git status: `git status` and `git log --oneline -5`
 
 **If context is running low:**
 - Use `/skill checkpoint` to save state
