@@ -19,6 +19,10 @@ type StaticRoute struct {
 	Action  RouteAction
 	ALPN    string
 	Domain  string
+	// PROXYProto enables PROXY protocol header for backend connections.
+	// 1 = PROXY protocol v1 (text), 2 = PROXY protocol v2 (binary)
+	// 0 = disabled (default)
+	PROXYProto int
 }
 
 // NewStaticRouter creates a router from a simple route map.

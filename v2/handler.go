@@ -6,9 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bnnanet/tlsrouter/v2/proxyproto"
+	"github.com/bnnanet/tlsrouter/v2/tun"
 )
 
 // Handler handles incoming TLS connections and routes them.
@@ -26,6 +32,22 @@ type Handler struct {
 	// Config is the current configuration (atomic)
 	// Used for dynamic config access during routing
 	config atomic.Value // Stores *Config
+
+	// DialTimeout is the timeout for backend connections.
+	// Default: 5 seconds
+	DialTimeout time.Duration
+
+	// KeepAliveConfig for backend connections.
+	// Default: enabled with 15s idle, 15s interval, 2 probes
+	KeepAlive KeepAliveConfig
+}
+
+// KeepAliveConfig configures TCP keepalive for backend connections.
+type KeepAliveConfig struct {
+	Enable   bool
+	Idle     time.Duration
+	Interval time.Duration
+	Count    int
 }
 
 // Logger is a simple logging interface.
@@ -59,8 +81,22 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	default:
 	}
 
+	// Build base TLS config with MinVersion
+	baseTLSConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12, // SECURITY: Require TLS 1.2+
+	}
+	if h.TLSConfig != nil {
+		baseTLSConfig = h.TLSConfig.Clone()
+		if baseTLSConfig.MinVersion < tls.VersionTLS12 || baseTLSConfig.MinVersion == 0 {
+			baseTLSConfig.MinVersion = tls.VersionTLS12
+		}
+	}
+
 	// TLS server with routing callback
 	tlsConfig := &tls.Config{
+		MinVersion: baseTLSConfig.MinVersion,
+		MaxVersion: baseTLSConfig.MaxVersion,
+		CipherSuites: baseTLSConfig.CipherSuites,
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			// Load latest config
 			var currentCfg *Config
@@ -88,6 +124,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 								ALPN:   "acme-tls/1",
 							}
 							return &tls.Config{
+								MinVersion:    tls.VersionTLS12,
 								GetCertificate: cmp.GetMagic().GetCertificate,
 								NextProtos:     []string{"acme-tls/1"},
 							}, nil
@@ -141,6 +178,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 					// Use certmagic's GetCertificate directly
 					// It will automatically handle ACME-TLS/1 challenges
 					return &tls.Config{
+						MinVersion:    tls.VersionTLS12,
 						GetCertificate: cmp.GetMagic().GetCertificate,
 						NextProtos:     []string{decision.ALPN},
 					}, nil
@@ -154,6 +192,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 			}
 
 			return &tls.Config{
+				MinVersion: tls.VersionTLS12,
 				Certificates: []tls.Certificate{{
 					Certificate: cert.Certificate,
 					PrivateKey:  cert.PrivateKey,
@@ -163,103 +202,6 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 		},
 	}
 
-	if h.TLSConfig != nil {
-		tlsConfig = h.TLSConfig.Clone()
-		baseGetConfig := tlsConfig.GetConfigForClient
-		tlsConfig.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-			if baseGetConfig != nil {
-				if cfg, err := baseGetConfig(hello); err != nil || cfg != nil {
-					return cfg, err
-				}
-			}
-
-			// Load latest config
-			var currentCfg *Config
-			if v := h.config.Load(); v != nil {
-				currentCfg = v.(*Config)
-			}
-
-			// Check for ACME-TLS/1 challenge
-			for _, alpn := range hello.SupportedProtos {
-				if alpn == "acme-tls/1" && currentCfg != nil {
-					domain := hello.ServerName
-
-					// Priority 1: Check if certmagic has an ACTIVE challenge
-					if cmp, ok := h.Certs.(*CertmagicCertProvider); ok && cmp.IsManaged(domain) {
-						if cmp.HasActiveChallenge(domain) {
-							decision = Decision{
-								Action: ActionTerminate,
-								Domain: domain,
-								ALPN:   "acme-tls/1",
-							}
-							return &tls.Config{
-								GetCertificate: cmp.GetMagic().GetCertificate,
-								NextProtos:     []string{"acme-tls/1"},
-							}, nil
-						}
-					}
-
-					// Priority 2: Check per-domain ACME backend (passthrough)
-					if backend, ok := currentCfg.ACMEBackends[domain]; ok {
-						decision = Decision{
-							Action:  ActionPassthrough,
-							Backend: backend,
-							Domain:  domain,
-							ALPN:    "acme-tls/1",
-						}
-						return nil, ErrPassthrough
-					}
-
-					// Priority 3: Check global ACME backend (passthrough)
-					if currentCfg.ACMEPassthrough != "" {
-						decision = Decision{
-							Action:  ActionPassthrough,
-							Backend: currentCfg.ACMEPassthrough,
-							Domain:  domain,
-							ALPN:    "acme-tls/1",
-						}
-						return nil, ErrPassthrough
-					}
-
-					// Priority 4: No route - error
-					return nil, fmt.Errorf("no ACME route for %q", domain)
-				}
-			}
-
-			// Default routing callback
-			decision, decisionErr = h.Router.Route(hello.ServerName, hello.SupportedProtos)
-			if decisionErr != nil {
-				return nil, decisionErr
-			}
-			decision.Domain = hello.ServerName
-			if decision.Action == ActionPassthrough {
-				return nil, ErrPassthrough
-			}
-
-			// Check if we have certmagic
-			if cmp, ok := h.Certs.(*CertmagicCertProvider); ok {
-				if cmp.IsManaged(hello.ServerName) {
-					return &tls.Config{
-						GetCertificate: cmp.GetMagic().GetCertificate,
-						NextProtos:     []string{decision.ALPN},
-					}, nil
-				}
-			}
-
-			cert, err := h.Certs.GetCertificate(decision.Domain)
-			if err != nil {
-				return nil, err
-			}
-			return &tls.Config{
-				Certificates: []tls.Certificate{{
-					Certificate: cert.Certificate,
-					PrivateKey:  cert.PrivateKey,
-				}},
-				NextProtos: []string{decision.ALPN},
-			}, nil
-		}
-	}
-
 	tlsConn := tls.Server(tracking, tlsConfig)
 
 	// Handshake
@@ -267,7 +209,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	if err != nil {
 		if err == ErrPassthrough {
 			// Tunnel raw TCP
-			return h.tunnelTCP(ctx, tracking, decision.Backend)
+			return h.tunnelTCP(ctx, tracking, decision)
 		}
 		h.logError("handshake failed", "error", err, "domain", decision.Domain)
 		return err
@@ -290,17 +232,25 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 		return nil
 	}
 
-	// Proxy HTTP (terminated)
-	return h.proxyHTTP(ctx, tlsConn, decision.Backend)
+	// Proxy HTTP (terminated) with proper X-Forwarded headers
+	return h.proxyHTTP(ctx, tlsConn, decision)
 }
 
-func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, backend string) error {
-	beConn, err := h.dialContext(ctx, backend)
+func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decision Decision) error {
+	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
-		h.logError("backend dial failed", "error", err, "backend", backend)
+		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
 		return err
 	}
 	defer beConn.Close()
+
+	// Write PROXY protocol header if configured
+	if decision.PROXYProto > 0 {
+		if err := h.writeProxyProto(beConn, tracking.Conn.RemoteAddr(), decision.PROXYProto); err != nil {
+			h.logError("PROXY protocol write failed", "error", err)
+			return err
+		}
+	}
 
 	// Copy peeked bytes first (multiple buffers, like original)
 	buffers := tracking.Passthru()
@@ -314,15 +264,127 @@ func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, backend
 	return h.copyBidirectionalWithContext(ctx, tracking.Conn, beConn)
 }
 
-func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, backend string) error {
-	beConn, err := h.dialContext(ctx, backend)
+// proxyHTTP proxies a terminated TLS connection to an HTTP backend.
+// For HTTP ALPNs, this uses httputil.ReverseProxy with proper X-Forwarded headers.
+func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, decision Decision) error {
+	// For HTTP ALPNs, use proper HTTP proxy with X-Forwarded headers
+	if decision.ALPN == "http/1.1" || decision.ALPN == "h2" || decision.ALPN == "h2c" {
+		return h.proxyHTTPWithForwardedHeaders(ctx, tlsConn, decision)
+	}
+
+	// For non-HTTP ALPNs, use direct TCP proxy
+	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
-		h.logError("backend dial failed", "error", err, "backend", backend)
+		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
 		return err
 	}
 	defer beConn.Close()
 
+	// Write PROXY protocol header if configured
+	if decision.PROXYProto > 0 {
+		if err := h.writeProxyProto(beConn, tlsConn.RemoteAddr(), decision.PROXYProto); err != nil {
+			h.logError("PROXY protocol write failed", "error", err)
+			return err
+		}
+	}
+
 	return h.copyBidirectionalWithContext(ctx, tlsConn, beConn)
+}
+
+// proxyHTTPWithForwardedHeaders uses httputil.ReverseProxy to properly handle
+// X-Forwarded-* headers for HTTP traffic.
+func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tls.Conn, decision Decision) error {
+	// Create a tunnel listener that accepts the injected connection
+	ln := tun.NewListener(ctx)
+
+	// Create the reverse proxy
+	backendURL, err := url.Parse(fmt.Sprintf("http://%s", decision.Backend))
+	if err != nil {
+		return fmt.Errorf("invalid backend URL: %w", err)
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(backendURL)
+			r.Out.Host = r.In.Host
+
+			// Set X-Forwarded headers
+			r.SetXForwarded()
+
+			// Add X-Forwarded-Proto header
+			r.Out.Header.Set("X-Forwarded-Proto", "https")
+
+			// Add X-Forwarded-SNI for backend to know which certificate was used
+			if decision.Domain != "" {
+				r.Out.Header.Set("X-Forwarded-SNI", decision.Domain)
+			}
+
+			// Add X-Forwarded-ALPN for backend to know negotiated protocol
+			if decision.ALPN != "" {
+				r.Out.Header.Set("X-Forwarded-ALPN", decision.ALPN)
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			h.logError("proxy error", "error", err, "backend", decision.Backend)
+			http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		},
+	}
+
+	// Create HTTP server with appropriate timeouts
+	httpServer := &http.Server{
+		Handler:           proxy,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Start HTTP server in background, serving from the tunnel listener
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	// Inject the TLS connection into the tunnel listener
+	if err := ln.Inject(tlsConn); err != nil {
+		httpServer.Close()
+		return fmt.Errorf("inject connection: %w", err)
+	}
+
+	// Wait for either completion or context cancellation
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+		return ctx.Err()
+	}
+}
+
+// writeProxyProto writes a PROXY protocol header to the connection.
+func (h *Handler) writeProxyProto(conn net.Conn, srcAddr net.Addr, version int) error {
+	var v proxyproto.Version
+	switch version {
+	case 1:
+		v = proxyproto.V1
+	case 2:
+		v = proxyproto.V2
+	default:
+		return fmt.Errorf("unsupported PROXY protocol version: %d", version)
+	}
+
+	header, err := proxyproto.NewHeader(v, srcAddr, conn.LocalAddr(), proxyproto.TCPv4)
+	if err != nil {
+		return err
+	}
+
+	_, err = header.WriteTo(conn)
+	return err
 }
 
 func (h *Handler) dial(addr string) (net.Conn, error) {
@@ -332,6 +394,7 @@ func (h *Handler) dial(addr string) (net.Conn, error) {
 	return net.Dial("tcp", addr)
 }
 
+// dialContext creates a backend connection with proper timeouts and keepalive.
 func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error) {
 	if h.Dialer != nil {
 		// Try ContextDialer first
@@ -341,7 +404,39 @@ func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error
 		// Fall back to regular Dialer
 		return h.Dialer.Dial("tcp", addr)
 	}
-	return net.DialTimeout("tcp", addr, 30*time.Second)
+
+	// Default: Use proper Dialer with timeout and keepalive
+	timeout := h.DialTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	keepAlive := h.KeepAlive
+	if keepAlive.Idle <= 0 {
+		keepAlive = KeepAliveConfig{
+			Enable:   true,
+			Idle:     15 * time.Second,
+			Interval: 15 * time.Second,
+			Count:    2,
+		}
+	}
+
+	d := net.Dialer{
+		Timeout:       timeout,
+		FallbackDelay: 300 * time.Millisecond,
+		KeepAlive:     keepAlive.Idle,
+	}
+
+	if keepAlive.Enable {
+		d.KeepAliveConfig = net.KeepAliveConfig{
+			Enable:   true,
+			Idle:     keepAlive.Idle,
+			Interval: keepAlive.Interval,
+			Count:    keepAlive.Count,
+		}
+	}
+
+	return d.DialContext(ctx, "tcp", addr)
 }
 
 func (h *Handler) copyBidirectional(a, b net.Conn) error {
