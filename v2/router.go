@@ -26,6 +26,10 @@ type Decision struct {
 	Backend string // "host:port" to proxy/tunnel to
 	Domain  string // SNI from ClientHello (for logging/certs)
 	ALPN    string // Selected ALPN protocol
+	// PROXYProto enables PROXY protocol header for backend connections.
+	// 1 = PROXY protocol v1 (text), 2 = PROXY protocol v2 (binary)
+	// 0 = disabled (default)
+	PROXYProto int
 }
 
 // ErrPassthrough is returned by GetConfigForClient when routing decides
