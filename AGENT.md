@@ -34,9 +34,8 @@
 1. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/AGENT.md` — this file (your role and project goals)
 2. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/STATUS.md` — current project state
 3. Read `/root/dev/projects/tlsrouter/worktrees/tron-tls/DECISIONS.md` — active design decisions
-4. Check `/root/dev/projects/tlsrouter/worktrees/tron-tls/DECISIONS.d/` — archived decisions if needed
-5. Read recent `/root/.openclaw/workspace/memory/YYYY-MM-DD.md` files (today + yesterday)
-6. Check git status: `git status` and `git log --oneline -5`
+4. Read recent `/root/.openclaw/workspace/memory/YYYY-MM-DD.md` files (today + yesterday)
+5. Check git status: `git status` and `git log --oneline -5`
 
 **If context is running low:**
 - Use `/skill checkpoint` to save state

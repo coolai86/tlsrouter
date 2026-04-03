@@ -35,7 +35,7 @@ type Handler struct {
 	config atomic.Value // Stores *Config
 
 	// DialTimeout is the timeout for backend connections.
-	// Default: 5 seconds
+	// Default: 500ms (aggressive for VPC networks)
 	DialTimeout time.Duration
 
 	// KeepAliveConfig for backend connections.
@@ -49,6 +49,10 @@ type Handler struct {
 	// Listeners tracks listening addresses for loop detection.
 	// If nil, loop detection is disabled.
 	Listeners *ListenerRegistry
+
+	// Security validates backends and protocols.
+	// If nil, DefaultSecurityConfig() is used.
+	Security *SecurityValidator
 }
 
 // KeepAliveConfig configures TCP keepalive for backend connections.
@@ -180,6 +184,14 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 			decision, decisionErr = h.Router.Route(hello.ServerName, hello.SupportedProtos)
 			if decisionErr != nil {
 				return nil, decisionErr
+			}
+
+			// SECURITY: Validate ALPN protocols
+			if h.Security != nil {
+				if err := h.Security.ValidateALPNList(hello.SupportedProtos); err != nil {
+					h.logError("ALPN validation failed", "error", err, "sni", hello.ServerName)
+					return nil, fmt.Errorf("invalid ALPN: %w", err)
+				}
 			}
 
 			// Store domain for later use
@@ -504,6 +516,13 @@ func (h *Handler) dial(addr string) (net.Conn, error) {
 
 // dialContext creates a backend connection with proper timeouts and keepalive.
 func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error) {
+	// SECURITY: Validate backend address
+	if h.Security != nil {
+		if err := h.Security.ValidateBackend(addr); err != nil {
+			return nil, fmt.Errorf("backend validation failed: %w", err)
+		}
+	}
+
 	if h.Dialer != nil {
 		// Try ContextDialer first
 		if cd, ok := h.Dialer.(ContextDialer); ok {
@@ -516,7 +535,7 @@ func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error
 	// Default: Use proper Dialer with timeout and keepalive
 	timeout := h.DialTimeout
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = 500 * time.Millisecond // SECURITY: Aggressive default for VPC
 	}
 
 	keepAlive := h.KeepAlive
