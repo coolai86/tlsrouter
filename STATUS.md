@@ -2,7 +2,7 @@
 
 **Branch:** `tron-tls`
 **Last Updated:** 2026-04-03
-**Status:** Integration tests passing ✅
+**Status:** Integration tests passing ✅ | Stats tracking implemented ✅
 
 ## Test Results
 
@@ -94,12 +94,16 @@ ok  	github.com/bnnanet/tlsrouter/v2	0.006s
 | File | Purpose | Tests |
 |------|---------|-------|
 | `v2/router.go` | Core interfaces (Router, CertProvider, Dialer) | ✅ |
-| `v2/handler.go` | TLS handshake with routing callback | ✅ |
+| `v2/handler.go` | TLS handshake with routing callback + stats tracking | ✅ |
 | `v2/server.go` | TCP server with graceful shutdown | ✅ |
 | `v2/config.go` | Atomic config wrapper | ✅ |
 | `v2/cert_provider.go` | Mock and static cert providers | ✅ |
 | `v2/certmagic_provider.go` | Real ACME integration | ✅ |
 | `v2/static_router.go` | Static + dynamic routing | ✅ |
+| `v2/stats.go` | **NEW** - Connection and route statistics | ✅ |
+| `v2/api.go` | **NEW** - HTTP API + SSE streaming | ✅ |
+| `v2/retention.go` | **NEW** - JSONL retention logging | ✅ |
+| `v2/STATS_DESIGN.md` | **NEW** - Stats design doc | - |
 | `v2/acme_test.go` | ACME unit tests | ✅ |
 | `v2/handler_test.go` | Handler tests | ✅ |
 | `v2/handler_acme_test.go` | ACME handler tests | ✅ |
@@ -122,9 +126,9 @@ ok  	github.com/bnnanet/tlsrouter/v2	0.006s
 
 ## Next Steps
 
-- [ ] Dynamic API for add/remove routes
-- [ ] HTTP/80 redirect handler
-- [ ] PROXY protocol support (v1/v2)
+- [ ] Integrate StatsRegistry into Server (add Stats field)
+- [ ] Wire APIServer into Server startup
+- [ ] Add HTTP/80 redirect handler (from original code)
 - [ ] Metrics/Prometheus endpoint
 - [ ] Connection pooling for backends
 - [ ] Rate limiting per backend

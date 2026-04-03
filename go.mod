@@ -6,6 +6,7 @@ tool github.com/therootcompany/golib/io/transform/gsheet2csv/cmd/gsheet2csv
 
 require (
 	github.com/caddyserver/certmagic v0.25.1
+	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
 	github.com/libdns/duckdns v0.3.0
 	github.com/mholt/acmez/v3 v3.1.4

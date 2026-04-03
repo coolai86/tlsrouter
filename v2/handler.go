@@ -15,6 +15,7 @@ import (
 
 	"github.com/bnnanet/tlsrouter/v2/proxyproto"
 	"github.com/bnnanet/tlsrouter/v2/tun"
+	"github.com/google/uuid"
 )
 
 // Handler handles incoming TLS connections and routes them.
@@ -40,6 +41,10 @@ type Handler struct {
 	// KeepAliveConfig for backend connections.
 	// Default: enabled with 15s idle, 15s interval, 2 probes
 	KeepAlive KeepAliveConfig
+
+	// Stats tracks connection statistics.
+	// If nil, stats are not tracked.
+	Stats *StatsRegistry
 }
 
 // KeepAliveConfig configures TCP keepalive for backend connections.
@@ -63,8 +68,17 @@ type Logger interface {
 func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	defer conn.Close()
 
+	// Generate connection ID and start tracking
+	connID := uuid.New().String()
+	ctx = ContextWithStatsID(ctx, connID)
+	if h.Stats != nil {
+		h.Stats.TrackConnection(connID, conn.RemoteAddr(), conn.LocalAddr())
+	}
+
 	// Track bytes read for passthrough
 	tracking := newTrackingConn(conn)
+	tracking.statsID = connID
+	tracking.stats = h.Stats
 
 	// Load current config (used later for certmagic check)
 	_ = h.GetConfig()
@@ -209,10 +223,36 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	if err != nil {
 		if err == ErrPassthrough {
 			// Tunnel raw TCP
+			// Record stats for passthrough
+			if h.Stats != nil {
+				routeType := RouteTypeStatic
+				if decision.Backend != "" {
+					// Check if it's ACME passthrough
+					for _, alpn := range []string{"acme-tls/1"} {
+						if decision.ALPN == alpn {
+							routeType = RouteTypeACMEPassthrough
+							break
+						}
+					}
+				}
+				h.Stats.SetRouteInfo(connID, decision, routeType, false, decision.Backend, 0, 0)
+			}
 			return h.tunnelTCP(ctx, tracking, decision)
 		}
 		h.logError("handshake failed", "error", err, "domain", decision.Domain)
+		// Record error close
+		if h.Stats != nil {
+			h.Stats.CloseConnection(connID, CloseReasonError)
+		}
 		return err
+	}
+
+	// Get TLS connection state
+	tlsState := tlsConn.ConnectionState()
+
+	// Record stats for terminated connection
+	if h.Stats != nil && !certmagicHandledACME {
+		h.Stats.SetRouteInfo(connID, decision, RouteTypeStatic, true, decision.Backend, tlsState.Version, tlsState.CipherSuite)
 	}
 
 	// Check if certmagic handled ACME challenge
@@ -237,12 +277,22 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 }
 
 func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decision Decision) error {
+	start := time.Now()
 	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
+		// Record backend error
+		if h.Stats != nil {
+			h.Stats.CloseConnection(tracking.statsID, CloseReasonError)
+		}
 		return err
 	}
 	defer beConn.Close()
+
+	// Record backend latency
+	if h.Stats != nil {
+		h.Stats.SetBackendLatency(tracking.statsID, time.Since(start))
+	}
 
 	// Write PROXY protocol header if configured
 	if decision.PROXYProto > 0 {
@@ -273,12 +323,19 @@ func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, decision Dec
 	}
 
 	// For non-HTTP ALPNs, use direct TCP proxy
+	start := time.Now()
 	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
 		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
 		return err
 	}
 	defer beConn.Close()
+
+	// Record backend latency
+	if h.Stats != nil && ctx.Value(StatsContextKey{}) != nil {
+		connID := ctx.Value(StatsContextKey{}).(string)
+		h.Stats.SetBackendLatency(connID, time.Since(start))
+	}
 
 	// Write PROXY protocol header if configured
 	if decision.PROXYProto > 0 {
@@ -573,6 +630,10 @@ type trackingConn struct {
 	mu      sync.Mutex
 	read    atomic.Int64
 	written atomic.Int64
+
+	// Stats tracking
+	statsID string        // Connection ID in stats registry
+	stats   *StatsRegistry // Stats registry (may be nil)
 }
 
 func newTrackingConn(conn net.Conn) *trackingConn {
@@ -582,6 +643,11 @@ func newTrackingConn(conn net.Conn) *trackingConn {
 func (tc *trackingConn) Read(b []byte) (int, error) {
 	n, err := tc.Conn.Read(b)
 	tc.read.Add(int64(n))
+
+	// Update stats
+	if tc.stats != nil && tc.statsID != "" {
+		tc.stats.UpdateBytes(tc.statsID, int64(n), 0, 0, 0)
+	}
 
 	// Store peeked data if this is the first read (before tunneling)
 	if tc.read.Load() <= int64(n) {
@@ -601,6 +667,12 @@ func (tc *trackingConn) Read(b []byte) (int, error) {
 func (tc *trackingConn) Write(b []byte) (int, error) {
 	n, err := tc.Conn.Write(b)
 	tc.written.Add(int64(n))
+
+	// Update stats
+	if tc.stats != nil && tc.statsID != "" {
+		tc.stats.UpdateBytes(tc.statsID, 0, int64(n), 0, 0)
+	}
+
 	return n, err
 }
 
