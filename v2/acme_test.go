@@ -41,10 +41,10 @@ func TestStaticRouter_ACME(t *testing.T) {
 			wantAction:  ActionPassthrough, // ACME always passthrough
 		},
 		{
-			name:        "ACME challenge no route",
-			sni:         "other.com",
-			alpns:       []string{"acme-tls/1"},
-			wantErr:     true,
+			name:    "ACME challenge no route",
+			sni:     "other.com",
+			alpns:   []string{"acme-tls/1"},
+			wantErr: true,
 		},
 	}
 

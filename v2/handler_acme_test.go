@@ -2,17 +2,18 @@ package tlsrouter
 
 import (
 	"net"
+	"slices"
 	"testing"
 )
 
 // TestHandler_ACMECases tests the three ACME handling cases.
 func TestHandler_ACMECases(t *testing.T) {
 	tests := []struct {
-		name           string
-		sni            string
-		alpns          []string
-		config         *Config
-		wantBackend    string
+		name            string
+		sni             string
+		alpns           []string
+		config          *Config
+		wantBackend     string
 		wantPassthrough bool
 	}{
 		{
@@ -38,10 +39,10 @@ func TestHandler_ACMECases(t *testing.T) {
 			wantPassthrough: true,
 		},
 		{
-			name:  "Normal HTTP traffic (not ACME)",
-			sni:   "example.com",
-			alpns: []string{"http/1.1"},
-			config: &Config{},
+			name:            "Normal HTTP traffic (not ACME)",
+			sni:             "example.com",
+			alpns:           []string{"http/1.1"},
+			config:          &Config{},
 			wantBackend:     "127.0.0.1:8080",
 			wantPassthrough: false,
 		},
@@ -178,11 +179,11 @@ func TestHandler_ACMEWithMixedALPN(t *testing.T) {
 	handler.SetConfig(config)
 
 	tests := []struct {
-		name          string
-		sni           string
-		alpns         []string
-		wantACME      bool
-		wantBackend   string
+		name        string
+		sni         string
+		alpns       []string
+		wantACME    bool
+		wantBackend string
 	}{
 		{
 			name:        "ACME as first ALPN",
@@ -215,13 +216,7 @@ func TestHandler_ACMEWithMixedALPN(t *testing.T) {
 			}
 
 			// Check if any ALPN is acme-tls/1
-			hasACME := false
-			for _, alpn := range tt.alpns {
-				if alpn == "acme-tls/1" {
-					hasACME = true
-					break
-				}
-			}
+			hasACME := slices.Contains(tt.alpns, "acme-tls/1")
 
 			if hasACME != tt.wantACME {
 				t.Errorf("ACME detection: got %v, want %v", hasACME, tt.wantACME)
@@ -312,9 +307,9 @@ func TestHandler_PostHandshakeACMEDetection(t *testing.T) {
 
 	// Simulate post-handshake state
 	decision := Decision{
-		Domain: "test.example.com",
-		ALPN:   "acme-tls/1",
-		Backend: "",  // No backend - certmagic handled it
+		Domain:  "test.example.com",
+		ALPN:    "acme-tls/1",
+		Backend: "", // No backend - certmagic handled it
 	}
 
 	// Check if certmagic should handle this
@@ -331,9 +326,9 @@ func TestHandler_PostHandshakeACMEDetection(t *testing.T) {
 
 	// Now test with a normal domain
 	decision = Decision{
-		Domain: "normal.example.com",
-		ALPN:   "acme-tls/1",
-		Backend: "10.0.0.1:443",  // Has backend - not certmagic
+		Domain:  "normal.example.com",
+		ALPN:    "acme-tls/1",
+		Backend: "10.0.0.1:443", // Has backend - not certmagic
 	}
 
 	certmagicHandled = false
@@ -378,10 +373,10 @@ func TestHandler_ACMELayeredRouting(t *testing.T) {
 	handler.SetConfig(config)
 
 	tests := []struct {
-		name        string
-		sni         string
-		alpns       []string
-		wantACME    bool
+		name     string
+		sni      string
+		alpns    []string
+		wantACME bool
 	}{
 		{
 			name:     "ACME on static route",

@@ -38,8 +38,10 @@ func (m *mockConn) Close() error {
 	return nil
 }
 
-func (m *mockConn) LocalAddr() net.Addr                { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345} }
-func (m *mockConn) RemoteAddr() net.Addr               { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 54321} }
+func (m *mockConn) LocalAddr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345} }
+func (m *mockConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 54321}
+}
 func (m *mockConn) SetDeadline(t time.Time) error      { return nil }
 func (m *mockConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockConn) SetWriteDeadline(t time.Time) error { return nil }
@@ -211,47 +213,47 @@ func TestDynamicRouter_IPRouting(t *testing.T) {
 	)
 
 	tests := []struct {
-		name      string
-		sni       string
-		alpns     []string
-		wantErr   bool
-		wantIP    string
-		wantPort  uint16
+		name       string
+		sni        string
+		alpns      []string
+		wantErr    bool
+		wantIP     string
+		wantPort   uint16
 		wantAction RouteAction
 	}{
 		{
-			name:      "terminated TLS",
-			sni:       "tls-192-168-1-100.vm.example.com",
-			alpns:     []string{"http/1.1"},
-			wantIP:    "192.168.1.100",
-			wantPort:  3080,
+			name:       "terminated TLS",
+			sni:        "tls-192-168-1-100.vm.example.com",
+			alpns:      []string{"http/1.1"},
+			wantIP:     "192.168.1.100",
+			wantPort:   3080,
 			wantAction: ActionTerminate,
 		},
 		{
-			name:      "raw TCP",
-			sni:       "tcp-192-168-1-100.vm.example.com",
-			alpns:     []string{"http/1.1"},
-			wantIP:    "192.168.1.100",
-			wantPort:  443,
+			name:       "raw TCP",
+			sni:        "tcp-192-168-1-100.vm.example.com",
+			alpns:      []string{"http/1.1"},
+			wantIP:     "192.168.1.100",
+			wantPort:   443,
 			wantAction: ActionPassthrough,
 		},
 		{
-			name:      "invalid IP",
-			sni:       "tls-999-999-999-999.vm.example.com",
-			alpns:     []string{"http/1.1"},
-			wantErr:   true,
+			name:    "invalid IP",
+			sni:     "tls-999-999-999-999.vm.example.com",
+			alpns:   []string{"http/1.1"},
+			wantErr: true,
 		},
 		{
-			name:      "invalid domain",
-			sni:       "tls-192-168-1-100.other.com",
-			alpns:     []string{"http/1.1"},
-			wantErr:   true,
+			name:    "invalid domain",
+			sni:     "tls-192-168-1-100.other.com",
+			alpns:   []string{"http/1.1"},
+			wantErr: true,
 		},
 		{
-			name:      "IP not in network",
-			sni:       "tls-10-0-0-1.vm.example.com",
-			alpns:     []string{"http/1.1"},
-			wantErr:   true,
+			name:    "IP not in network",
+			sni:     "tls-10-0-0-1.vm.example.com",
+			alpns:   []string{"http/1.1"},
+			wantErr: true,
 		},
 	}
 
@@ -302,9 +304,9 @@ func TestLayeredRouter(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		sni      string
-		alpns    []string
+		name        string
+		sni         string
+		alpns       []string
 		wantBackend string
 	}{
 		{

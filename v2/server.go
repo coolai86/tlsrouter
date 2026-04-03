@@ -53,9 +53,7 @@ func (s *Server) ListenAndServe() error {
 			}
 		}
 
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 
 			// Create a per-connection context from server context
 			// Each connection gets a 5-minute timeout
@@ -67,7 +65,7 @@ func (s *Server) ListenAndServe() error {
 					log.Printf("connection error: %v", err)
 				}
 			}
-		}()
+		})
 	}
 }
 

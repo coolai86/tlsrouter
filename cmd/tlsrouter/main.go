@@ -295,16 +295,14 @@ func splitList(s string) []string {
 }
 
 func Start(wg *sync.WaitGroup, lc *tlsrouter.ListenConfig, addr string, mux *http.ServeMux) error {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 
 		log.Printf("\nListening on %s...", addr)
 		if err := lc.ListenAndProxy(addr, mux); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("Server error: %v", err)
 		}
 		log.Printf("Closed\n")
-	}()
+	})
 	return nil
 }
 

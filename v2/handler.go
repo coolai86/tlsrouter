@@ -324,28 +324,24 @@ func (h *Handler) copyBidirectionalWithContext(ctx context.Context, a, b net.Con
 	var done = make(chan struct{})
 
 	// Copy a -> b
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		err := copyWithContext(ctx, a, b)
 		if err != nil {
 			h.logError("copy a->b error", "error", err)
 			errA2B = err
 		}
 		closeWrite(b)
-	}()
+	})
 
 	// Copy b -> a
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		err := copyWithContext(ctx, b, a)
 		if err != nil {
 			h.logError("copy b->a error", "error", err)
 			errB2A = err
 		}
 		closeWrite(a)
-	}()
+	})
 
 	// Wait for completion or context cancellation
 	go func() {
@@ -429,10 +425,10 @@ func (h *Handler) GetConfig() *Config {
 // It also stores peeked bytes from the TLS handshake.
 type trackingConn struct {
 	net.Conn
-	peeked   [][]byte // Multiple buffers for peeked data (like original)
-	mu       sync.Mutex
-	read     atomic.Int64
-	written  atomic.Int64
+	peeked  [][]byte // Multiple buffers for peeked data (like original)
+	mu      sync.Mutex
+	read    atomic.Int64
+	written atomic.Int64
 }
 
 func newTrackingConn(conn net.Conn) *trackingConn {
