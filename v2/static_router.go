@@ -15,10 +15,10 @@ type StaticRouter struct {
 
 // StaticRoute is a single static route.
 type StaticRoute struct {
-	Backend    string
-	Action     RouteAction
-	ALPN       string
-	Domain     string
+	Backend string
+	Action  RouteAction
+	ALPN    string
+	Domain  string
 }
 
 // NewStaticRouter creates a router from a simple route map.
@@ -146,7 +146,7 @@ type DynamicRouter struct {
 func NewDynamicRouter(ipDomains []string, networks []net.IPNet) *DynamicRouter {
 	return &DynamicRouter{
 		IPDomains:       ipDomains,
-		Networks:         networks,
+		Networks:        networks,
 		TerminatedPorts: defaultTerminatedPorts,
 		RawPorts:        defaultRawPorts,
 		// ACME passthrough backend - set this to route acme-tls/1 to a specific backend
@@ -233,17 +233,15 @@ func (r *DynamicRouter) Route(sni string, alpns []string) (Decision, error) {
 	}
 
 	// First check for ACME-TLS/1 - use raw port 443
-	for _, alpn := range alpns {
-		if alpn == "acme-tls/1" {
-			selectedALPN = "acme-tls/1"
-			port = 443
-			return Decision{
-				Action:  ActionPassthrough,
-				Backend: fmt.Sprintf("%s:%d", ipStr, port),
-				Domain:  sni,
-				ALPN:    selectedALPN,
-			}, nil
-		}
+	if slices.Contains(alpns, "acme-tls/1") {
+		selectedALPN = "acme-tls/1"
+		port = 443
+		return Decision{
+			Action:  ActionPassthrough,
+			Backend: fmt.Sprintf("%s:%d", ipStr, port),
+			Domain:  sni,
+			ALPN:    selectedALPN,
+		}, nil
 	}
 
 	// Then check for other ALPNs
@@ -304,29 +302,29 @@ var defaultTerminatedPorts = map[string]uint16{
 }
 
 var defaultRawPorts = map[string]uint16{
-	"http/1.1":   443,
-	"h2":         443,
-	"ssh":        44322,
-	"acme-tls/1": 443,
-	"coap":       5684,
-	"dicom":      2762,
-	"dot":        853,
-	"ftp":        990,
-	"imap":       993,
-	"irc":        6697,
+	"http/1.1":    443,
+	"h2":          443,
+	"ssh":         44322,
+	"acme-tls/1":  443,
+	"coap":        5684,
+	"dicom":       2762,
+	"dot":         853,
+	"ftp":         990,
+	"imap":        993,
+	"irc":         6697,
 	"managesieve": 4190,
-	"mqtt":       8883,
-	"nntp":       563,
-	"ntske/1":    4460,
-	"pop3":       995,
-	"postgresql": 5432,
-	"tds/8.0":    1433,
-	"radius/1.0": 2083,
-	"radius/1.1": 2083,
-	"sip":        5061,
-	"smb":        10445,
-	"webrtc":     443,
-	"c-webrtc":   443,
+	"mqtt":        8883,
+	"nntp":        563,
+	"ntske/1":     4460,
+	"pop3":        995,
+	"postgresql":  5432,
+	"tds/8.0":     1433,
+	"radius/1.0":  2083,
+	"radius/1.1":  2083,
+	"sip":         5061,
+	"smb":         10445,
+	"webrtc":      443,
+	"c-webrtc":    443,
 	"xmpp-client": 5223,
 	"xmpp-server": 5270,
 }

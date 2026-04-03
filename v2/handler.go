@@ -3,6 +3,7 @@ package tlsrouter
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -67,30 +68,56 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 				currentCfg = v.(*Config)
 			}
 
-			// Check for ACME-TLS/1 challenge with dedicated backend
+			// Check for ACME-TLS/1 challenge
 			for _, alpn := range hello.SupportedProtos {
 				if alpn == "acme-tls/1" && currentCfg != nil {
-					// Check per-domain ACME backend first
-					if backend, ok := currentCfg.ACMEBackends[hello.ServerName]; ok {
+					domain := hello.ServerName
+
+					// Priority 1: Check if certmagic has an ACTIVE challenge for this domain.
+					// This handles the case where both TLSrouter and a passthrough backend
+					// (e.g., Caddy) need certs for the same domain. When TLSrouter has an
+					// active challenge, it handles it. Otherwise, passthrough to backend.
+					if cmp, ok := h.Certs.(*CertmagicCertProvider); ok && cmp.IsManaged(domain) {
+						if cmp.HasActiveChallenge(domain) {
+							// TLSrouter's certmagic handles this challenge
+							// Return a TLS config that will complete the handshake
+							// Post-handshake detection will close cleanly
+							decision = Decision{
+								Action: ActionTerminate,
+								Domain: domain,
+								ALPN:   "acme-tls/1",
+							}
+							return &tls.Config{
+								GetCertificate: cmp.GetMagic().GetCertificate,
+								NextProtos:     []string{"acme-tls/1"},
+							}, nil
+						}
+					}
+
+					// Priority 2: Check per-domain ACME backend (passthrough)
+					if backend, ok := currentCfg.ACMEBackends[domain]; ok {
 						decision = Decision{
 							Action:  ActionPassthrough,
 							Backend: backend,
-							Domain:  hello.ServerName,
+							Domain:  domain,
 							ALPN:    "acme-tls/1",
 						}
 						return nil, ErrPassthrough
 					}
 
-					// Check global ACME backend
+					// Priority 3: Check global ACME backend (passthrough)
 					if currentCfg.ACMEPassthrough != "" {
 						decision = Decision{
 							Action:  ActionPassthrough,
 							Backend: currentCfg.ACMEPassthrough,
-							Domain:  hello.ServerName,
+							Domain:  domain,
 							ALPN:    "acme-tls/1",
 						}
 						return nil, ErrPassthrough
 					}
+
+					// Priority 4: No route - error
+					return nil, fmt.Errorf("no ACME route for %q", domain)
 				}
 			}
 
@@ -152,28 +179,50 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 				currentCfg = v.(*Config)
 			}
 
-			// Check for ACME-TLS/1 challenge with dedicated backend
+			// Check for ACME-TLS/1 challenge
 			for _, alpn := range hello.SupportedProtos {
 				if alpn == "acme-tls/1" && currentCfg != nil {
-					if backend, ok := currentCfg.ACMEBackends[hello.ServerName]; ok {
+					domain := hello.ServerName
+
+					// Priority 1: Check if certmagic has an ACTIVE challenge
+					if cmp, ok := h.Certs.(*CertmagicCertProvider); ok && cmp.IsManaged(domain) {
+						if cmp.HasActiveChallenge(domain) {
+							decision = Decision{
+								Action: ActionTerminate,
+								Domain: domain,
+								ALPN:   "acme-tls/1",
+							}
+							return &tls.Config{
+								GetCertificate: cmp.GetMagic().GetCertificate,
+								NextProtos:     []string{"acme-tls/1"},
+							}, nil
+						}
+					}
+
+					// Priority 2: Check per-domain ACME backend (passthrough)
+					if backend, ok := currentCfg.ACMEBackends[domain]; ok {
 						decision = Decision{
 							Action:  ActionPassthrough,
 							Backend: backend,
-							Domain:  hello.ServerName,
+							Domain:  domain,
 							ALPN:    "acme-tls/1",
 						}
 						return nil, ErrPassthrough
 					}
 
+					// Priority 3: Check global ACME backend (passthrough)
 					if currentCfg.ACMEPassthrough != "" {
 						decision = Decision{
 							Action:  ActionPassthrough,
 							Backend: currentCfg.ACMEPassthrough,
-							Domain:  hello.ServerName,
+							Domain:  domain,
 							ALPN:    "acme-tls/1",
 						}
 						return nil, ErrPassthrough
 					}
+
+					// Priority 4: No route - error
+					return nil, fmt.Errorf("no ACME route for %q", domain)
 				}
 			}
 
@@ -324,28 +373,24 @@ func (h *Handler) copyBidirectionalWithContext(ctx context.Context, a, b net.Con
 	var done = make(chan struct{})
 
 	// Copy a -> b
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		err := copyWithContext(ctx, a, b)
 		if err != nil {
 			h.logError("copy a->b error", "error", err)
 			errA2B = err
 		}
 		closeWrite(b)
-	}()
+	})
 
 	// Copy b -> a
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		err := copyWithContext(ctx, b, a)
 		if err != nil {
 			h.logError("copy b->a error", "error", err)
 			errB2A = err
 		}
 		closeWrite(a)
-	}()
+	})
 
 	// Wait for completion or context cancellation
 	go func() {
@@ -429,10 +474,10 @@ func (h *Handler) GetConfig() *Config {
 // It also stores peeked bytes from the TLS handshake.
 type trackingConn struct {
 	net.Conn
-	peeked   [][]byte // Multiple buffers for peeked data (like original)
-	mu       sync.Mutex
-	read     atomic.Int64
-	written  atomic.Int64
+	peeked  [][]byte // Multiple buffers for peeked data (like original)
+	mu      sync.Mutex
+	read    atomic.Int64
+	written atomic.Int64
 }
 
 func newTrackingConn(conn net.Conn) *trackingConn {

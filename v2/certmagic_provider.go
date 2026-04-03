@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"path"
 	"sync"
 
 	"github.com/caddyserver/certmagic"
@@ -175,4 +176,51 @@ func (cp *CertmagicCertProvider) IsManaged(domain string) bool {
 	cp.mu.RLock()
 	defer cp.mu.RUnlock()
 	return cp.managedDomains[domain]
+}
+
+// HasActiveChallenge checks if certmagic has an active ACME-TLS/1 challenge
+// for the given domain. This checks both in-memory (this process) and
+// distributed storage (other processes).
+//
+// When a domain has both terminate and passthrough routes (e.g., SSH terminate
+// and HTTP passthrough), both TLSrouter and the backend (e.g., Caddy) may need
+// to get certificates. They share the same domain, so only one can solve
+// ACME-TLS/1 challenges at a time.
+//
+// This function returns true when TLSrouter's certmagic has an ACTIVE challenge,
+// meaning TLSrouter should handle it. When false, the challenge should passthrough
+// to the backend.
+func (cp *CertmagicCertProvider) HasActiveChallenge(domain string) bool {
+	// 1. Check in-memory challenges (this process initiated)
+	if _, ok := certmagic.GetACMEChallenge(domain); ok {
+		return true
+	}
+
+	// 2. Check distributed storage (another process initiated)
+	// This requires shared storage between TLSrouter and backends.
+	if cp.magic.Storage == nil {
+		return false
+	}
+
+	ctx := context.Background()
+
+	// Check each issuer's challenge token storage
+	for _, issuer := range cp.magic.Issuers {
+		// Get the issuer key for storage path
+		issuerKey := issuer.IssuerKey()
+		prefix := storageKeyACMECAPrefix(issuerKey)
+		tokenKey := path.Join(prefix, "challenge_tokens", certmagic.StorageKeys.Safe(domain)+".json")
+
+		if cp.magic.Storage.Exists(ctx, tokenKey) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// storageKeyACMECAPrefix returns the storage key prefix for ACME challenges.
+// This mirrors certmagic's internal function.
+func storageKeyACMECAPrefix(issuerKey string) string {
+	return path.Join("acme_account", certmagic.StorageKeys.Safe(issuerKey))
 }

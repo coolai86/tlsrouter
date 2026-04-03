@@ -1,6 +1,7 @@
 package tlsrouter
 
 import (
+	"maps"
 	"net"
 	"sync/atomic"
 )
@@ -38,15 +39,11 @@ type Config struct {
 func (c *Config) Copy() *Config {
 	// Copy static routes map
 	staticRoutes := make(map[string]StaticRoute, len(c.StaticRoutes))
-	for k, v := range c.StaticRoutes {
-		staticRoutes[k] = v
-	}
+	maps.Copy(staticRoutes, c.StaticRoutes)
 
 	// Copy ACME backends map
 	acmeBackends := make(map[string]string, len(c.ACMEBackends))
-	for k, v := range c.ACMEBackends {
-		acmeBackends[k] = v
-	}
+	maps.Copy(acmeBackends, c.ACMEBackends)
 
 	// Copy IP domains slice
 	ipDomains := make([]string, len(c.IPDomains))
@@ -57,12 +54,12 @@ func (c *Config) Copy() *Config {
 	copy(networks, c.Networks)
 
 	return &Config{
-		StaticRoutes:  staticRoutes,
-		IPDomains:     ipDomains,
-		Networks:      networks,
+		StaticRoutes:    staticRoutes,
+		IPDomains:       ipDomains,
+		Networks:        networks,
 		ACMEPassthrough: c.ACMEPassthrough,
-		ACMEBackends:  acmeBackends,
-		Certmagic:     c.Certmagic, // Struct copy
+		ACMEBackends:    acmeBackends,
+		Certmagic:       c.Certmagic, // Struct copy
 	}
 }
 
