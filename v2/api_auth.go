@@ -3,19 +3,21 @@ package tlsrouter
 import (
 	"net/http"
 	"slices"
-	"strings"
+
+	"github.com/therootcompany/golib/auth"
 )
 
 // APIAuthConfig configures authentication for the stats API.
 type APIAuthConfig struct {
-	// Authenticator is the csvauth.Auth instance for credential verification.
+	// Authenticator is the credential store (e.g., *csvauth.Auth).
 	// If nil, no authentication is required (not recommended for production).
-	Authenticator interface {
-		Authenticate(username, password string) (interface{ Permissions() []string }, error)
-	}
+	Authenticator auth.BasicAuthenticator
 
 	// Permissions required to access the API. If empty, any authenticated user can access.
 	RequiredPermissions []string
+
+	// Realm for WWW-Authenticate header (default: "Basic")
+	Realm string
 }
 
 // AuthenticatedHandler wraps an http.Handler with authentication.
@@ -25,16 +27,24 @@ func (c *APIAuthConfig) AuthenticatedHandler(next http.Handler) http.Handler {
 		return next
 	}
 
+	realm := c.Realm
+	if realm == "" {
+		realm = "Basic"
+	}
+	ra := auth.NewBasicRequestAuthenticator(c.Authenticator)
+	ra.BasicRealm = realm
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principle, err := c.authenticateRequest(r)
+		credential, err := ra.Authenticate(r)
 		if err != nil {
+			w.Header().Set("WWW-Authenticate", ra.BasicRealm)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		// Check permissions if required
 		if len(c.RequiredPermissions) > 0 {
-			perms := principle.Permissions()
+			perms := credential.Permissions()
 			hasPerm := false
 			for _, required := range c.RequiredPermissions {
 				if slices.Contains(perms, required) {
@@ -50,37 +60,4 @@ func (c *APIAuthConfig) AuthenticatedHandler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-// authenticateRequest extracts credentials from the request and validates them.
-func (c *APIAuthConfig) authenticateRequest(r *http.Request) (interface{ Permissions() []string }, error) {
-	// Try Bearer token first
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimPrefix(auth, "Bearer ")
-		return c.Authenticator.Authenticate("", token)
-	}
-
-	// Try Basic auth
-	if user, pass, ok := r.BasicAuth(); ok {
-		return c.Authenticator.Authenticate(user, pass)
-	}
-
-	// Try query parameter
-	if token := r.URL.Query().Get("access_token"); token != "" {
-		return c.Authenticator.Authenticate("", token)
-	}
-
-	return nil, ErrNoCredentials
-}
-
-// ErrNoCredentials is returned when no credentials are provided.
-var ErrNoCredentials = &AuthError{Message: "no credentials provided"}
-
-// AuthError represents an authentication error.
-type AuthError struct {
-	Message string
-}
-
-func (e *AuthError) Error() string {
-	return e.Message
 }

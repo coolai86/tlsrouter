@@ -11,6 +11,7 @@ require (
 	github.com/libdns/duckdns v0.3.0
 	github.com/mholt/acmez/v3 v3.1.4
 	github.com/pires/go-proxyproto v0.9.0
+	github.com/therootcompany/golib/auth v1.1.1
 	golang.org/x/sys v0.40.0
 )
 
