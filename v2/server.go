@@ -21,11 +21,15 @@ type Server struct {
 	// If empty, no API server is started
 	APIAddr string
 
-	listener   net.Listener
-	apiServer  *http.Server
-	wg         sync.WaitGroup
-	ctx        context.Context
-	cancel     context.CancelFunc
+	// APIAuth configures authentication for the stats API (optional)
+	// Use WithAPIAuth to configure
+	APIAuth *APIAuthConfig
+
+	listener  net.Listener
+	apiServer *http.Server
+	wg        sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // NewServer creates a new TLS routing server.
@@ -57,6 +61,12 @@ func (s *Server) WithAPI(addr string) *Server {
 	return s
 }
 
+// WithAPIAuth configures authentication for the stats API.
+func (s *Server) WithAPIAuth(auth *APIAuthConfig) *Server {
+	s.APIAuth = auth
+	return s
+}
+
 // ListenAndServe starts the server.
 func (s *Server) ListenAndServe() error {
 	var err error
@@ -74,9 +84,14 @@ func (s *Server) ListenAndServe() error {
 
 	// Start API server if configured
 	if s.APIAddr != "" && s.Stats != nil {
+		apiHandler := http.Handler(NewAPIServer(s.Stats))
+		// Wrap with auth if configured
+		if s.APIAuth != nil {
+			apiHandler = s.APIAuth.AuthenticatedHandler(apiHandler)
+		}
 		s.apiServer = &http.Server{
 			Addr:    s.APIAddr,
-			Handler: NewAPIServer(s.Stats),
+			Handler: apiHandler,
 		}
 		s.wg.Go(func() {
 			log.Printf("stats API listening on %s", s.APIAddr)
