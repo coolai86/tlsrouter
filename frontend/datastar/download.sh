@@ -18,9 +18,9 @@ if [ ! -s "${SCRIPT_DIR}/datastar.js" ]; then
     exit 1
 fi
 
-# Copy to v2/vendor/ for go:embed
-cp "${SCRIPT_DIR}/datastar.js" "${PROJECT_ROOT}/v2/vendor/datastar.js"
+# Copy to v2/frontend/ for go:embed
+cp "${SCRIPT_DIR}/datastar.js" "${PROJECT_ROOT}/v2/frontend/datastar.js"
 
 echo "Downloaded datastar.js ($(wc -c < "${SCRIPT_DIR}/datastar.js") bytes)"
-echo "Copied to v2/vendor/datastar.js"
+echo "Copied to v2/frontend/datastar.js"
 echo "Done."

@@ -24,15 +24,15 @@ try {
     exit 1
 }
 
-# Copy to v2/vendor/ for go:embed
-$V2Vendor = Join-Path $ProjectRoot "v2\vendor"
-Copy-Item $CssFile (Join-Path $V2Vendor "oat.min.css") -Force
-Copy-Item $JsFile (Join-Path $V2Vendor "oat.min.js") -Force
+# Copy to v2/frontend/ for go:embed
+$V2Frontend = Join-Path $ProjectRoot "v2\frontend"
+Copy-Item $CssFile (Join-Path $V2Frontend "oat.min.css") -Force
+Copy-Item $JsFile (Join-Path $V2Frontend "oat.min.js") -Force
 
 $CssSize = (Get-Item $CssFile).Length
 $JsSize = (Get-Item $JsFile).Length
 
 Write-Host "Downloaded oat.min.css ($CssSize bytes)"
 Write-Host "Downloaded oat.min.js ($JsSize bytes)"
-Write-Host "Copied to v2/vendor/"
+Write-Host "Copied to v2/frontend/"
 Write-Host "Done."

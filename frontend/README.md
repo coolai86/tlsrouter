@@ -5,7 +5,8 @@ This directory contains vendored frontend dependencies for the TLSrouter dashboa
 ## Structure
 
 ```
-vendor/
+frontend/
+├── README.md
 ├── datastar/
 │   ├── datastar.js      # Datastar v1.0.0-RC.7
 │   ├── download.sh      # POSIX shell download script
@@ -17,17 +18,31 @@ vendor/
     └── download.ps1     # PowerShell download script
 ```
 
+## Why `frontend/` instead of `vendor/`?
+
+Go reserves `./vendor/` for Go module dependencies. Frontend assets must go in a different directory to avoid conflicts with `go mod vendor`.
+
+## Embedding
+
+The `v2/frontend/` directory contains copies for `go:embed`:
+
+```go
+//go:embed frontend/datastar.js
+//go:embed frontend/oat.min.css
+//go:embed frontend/oat.min.js
+var frontendAssets embed.FS
+```
+
 ## Updating Dependencies
 
 ### Datastar
 
 ```bash
 # POSIX (Linux/macOS)
-cd vendor/datastar
-./download.sh v1.0.0-RC.7
+cd frontend/datastar && ./download.sh v1.0.0-RC.7
 
 # PowerShell (Windows)
-cd vendor/datastar
+cd frontend\datastar
 .\download.ps1 -Version v1.0.0-RC.7
 ```
 
@@ -35,31 +50,12 @@ cd vendor/datastar
 
 ```bash
 # POSIX (Linux/macOS)
-cd vendor/oat
-./download.sh
+cd frontend/oat && ./download.sh
 
 # PowerShell (Windows)
-cd vendor\oat
+cd frontend\oat
 .\download.ps1
 ```
-
-## v2/ Module Copy
-
-The `v2/vendor/` directory contains copies of these assets for `go:embed`:
-
-```bash
-# After updating vendor/*, sync to v2/vendor/
-cp vendor/datastar/datastar.js v2/vendor/
-cp vendor/oat/oat.min.css v2/vendor/
-cp vendor/oat/oat.min.js v2/vendor/
-```
-
-## Why Vendor?
-
-- **Zero runtime dependencies** — no CDN calls, works offline
-- **Stable versions** — pinned versions, no surprise breakage
-- **Reproducible builds** — same binary from same commit
-- **Self-contained** — single binary serves everything
 
 ## Licenses
 

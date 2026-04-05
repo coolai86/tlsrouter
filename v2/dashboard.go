@@ -11,11 +11,11 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 )
 
-// Vendored frontend assets (downloaded via vendor/*/download.sh)
-//go:embed vendor/datastar.js
-//go:embed vendor/oat.min.css
-//go:embed vendor/oat.min.js
-var vendorAssets embed.FS
+// Vendored frontend assets (downloaded via frontend/*/download.sh)
+//go:embed frontend/datastar.js
+//go:embed frontend/oat.min.css
+//go:embed frontend/oat.min.js
+var frontendAssets embed.FS
 
 // DashboardServer provides a real-time dashboard using Datastar.
 type DashboardServer struct {
@@ -38,11 +38,11 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/dashboard", "/dashboard/":
 		d.serveDashboard(w, r)
 	case "/dashboard/datastar.js":
-		d.serveStatic(w, r, "vendor/datastar.js", "application/javascript")
+		d.serveStatic(w, r, "frontend/datastar.js", "application/javascript")
 	case "/dashboard/oat.min.css":
-		d.serveStatic(w, r, "vendor/oat.min.css", "text/css")
+		d.serveStatic(w, r, "frontend/oat.min.css", "text/css")
 	case "/dashboard/oat.min.js":
-		d.serveStatic(w, r, "vendor/oat.min.js", "application/javascript")
+		d.serveStatic(w, r, "frontend/oat.min.js", "application/javascript")
 	case "/dashboard/stream":
 		d.streamUpdates(w, r)
 	case "/dashboard/connections":
@@ -54,9 +54,9 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveStatic serves a file from the embedded vendor assets.
+// serveStatic serves a file from the embedded frontend assets.
 func (d *DashboardServer) serveStatic(w http.ResponseWriter, r *http.Request, name, contentType string) {
-	data, err := vendorAssets.ReadFile(name)
+	data, err := frontendAssets.ReadFile(name)
 	if err != nil {
 		http.Error(w, "file not found", http.StatusInternalServerError)
 		return

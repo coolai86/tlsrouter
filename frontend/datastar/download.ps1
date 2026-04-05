@@ -24,12 +24,12 @@ try {
     exit 1
 }
 
-# Copy to v2/vendor/ for go:embed
-$V2Vendor = Join-Path $ProjectRoot "v2\vendor"
-$V2OutputFile = Join-Path $V2Vendor "datastar.js"
+# Copy to v2/frontend/ for go:embed
+$V2Frontend = Join-Path $ProjectRoot "v2\frontend"
+$V2OutputFile = Join-Path $V2Frontend "datastar.js"
 Copy-Item $OutputFile $V2OutputFile -Force
 
 $FileSize = (Get-Item $OutputFile).Length
 Write-Host "Downloaded datastar.js ($FileSize bytes)"
-Write-Host "Copied to v2/vendor/datastar.js"
+Write-Host "Copied to v2/frontend/datastar.js"
 Write-Host "Done."

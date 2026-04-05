@@ -24,11 +24,11 @@ if [ ! -s "${SCRIPT_DIR}/oat.min.js" ]; then
     exit 1
 fi
 
-# Copy to v2/vendor/ for go:embed
-cp "${SCRIPT_DIR}/oat.min.css" "${PROJECT_ROOT}/v2/vendor/oat.min.css"
-cp "${SCRIPT_DIR}/oat.min.js" "${PROJECT_ROOT}/v2/vendor/oat.min.js"
+# Copy to v2/frontend/ for go:embed
+cp "${SCRIPT_DIR}/oat.min.css" "${PROJECT_ROOT}/v2/frontend/oat.min.css"
+cp "${SCRIPT_DIR}/oat.min.js" "${PROJECT_ROOT}/v2/frontend/oat.min.js"
 
 echo "Downloaded oat.min.css ($(wc -c < "${SCRIPT_DIR}/oat.min.css") bytes)"
 echo "Downloaded oat.min.js ($(wc -c < "${SCRIPT_DIR}/oat.min.js") bytes)"
-echo "Copied to v2/vendor/"
+echo "Copied to v2/frontend/"
 echo "Done."
