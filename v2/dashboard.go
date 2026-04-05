@@ -11,7 +11,7 @@ import (
 	"github.com/starfederation/datastar-go/datastar"
 )
 
-//go:embed static/datastar.js
+//go:embed static
 var staticFS embed.FS
 
 // DashboardServer provides a real-time dashboard using Datastar.
@@ -35,7 +35,11 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/dashboard", "/dashboard/":
 		d.serveDashboard(w, r)
 	case "/dashboard/datastar.js":
-		d.serveDatastar(w, r)
+		d.serveStatic(w, r, "static/datastar.js", "application/javascript")
+	case "/dashboard/oat.min.css":
+		d.serveStatic(w, r, "static/oat.min.css", "text/css")
+	case "/dashboard/oat.min.js":
+		d.serveStatic(w, r, "static/oat.min.js", "application/javascript")
 	case "/dashboard/stream":
 		d.streamUpdates(w, r)
 	case "/dashboard/connections":
@@ -45,6 +49,19 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveStatic serves a file from the embedded static FS.
+func (d *DashboardServer) serveStatic(w http.ResponseWriter, r *http.Request, name, contentType string) {
+	data, err := staticFS.ReadFile(name)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentType+"; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000") // 1 year
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // serveDatastar serves the vendored Datastar JS library.
