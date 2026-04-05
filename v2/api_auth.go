@@ -20,6 +20,14 @@ type APIAuthConfig struct {
 
 	// Realm for WWW-Authenticate header (default: "Basic")
 	Realm string
+
+	// RateLimiter limits authentication attempts per IP (optional but recommended)
+	// Prevents timing attacks and credential stuffing.
+	RateLimiter *AuthRateLimiter
+
+	// TrustProxy enables X-Forwarded-For and X-Real-IP for rate limiting
+	// Only enable if behind a trusted reverse proxy
+	TrustProxy bool
 }
 
 // AuthenticatedHandler wraps an http.Handler with authentication.
@@ -41,11 +49,31 @@ func (c *APIAuthConfig) AuthenticatedHandler(next http.Handler) http.Handler {
 	ra.BasicRealm = realm
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract client IP for rate limiting
+		ip := extractIP(r, c.TrustProxy)
+
+		// Check rate limit before attempting auth
+		if c.RateLimiter != nil {
+			if err := c.RateLimiter.Check(ip); err != nil {
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+		}
+
 		principal, err := ra.Authenticate(r)
 		if err != nil {
+			// Record failed attempt for rate limiting
+			if c.RateLimiter != nil {
+				c.RateLimiter.RecordFailure(ip)
+			}
 			w.Header().Set("WWW-Authenticate", ra.BasicRealm)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
+		}
+
+		// Record successful auth (clears failure history)
+		if c.RateLimiter != nil {
+			c.RateLimiter.RecordSuccess(ip)
 		}
 
 		// Check permissions if required
@@ -78,6 +106,18 @@ func MustAuth(authenticator auth.BasicAuthenticator, permissions ...string) *API
 		Authenticator:       authenticator,
 		RequiredPermissions: permissions,
 	}
+}
+
+// WithRateLimiter sets the rate limiter for auth attempts.
+func (c *APIAuthConfig) WithRateLimiter(limiter *AuthRateLimiter) *APIAuthConfig {
+	c.RateLimiter = limiter
+	return c
+}
+
+// WithTrustProxy enables X-Forwarded-For/X-Real-IP for rate limiting.
+func (c *APIAuthConfig) WithTrustProxy(trust bool) *APIAuthConfig {
+	c.TrustProxy = trust
+	return c
 }
 
 // WithRealm sets the WWW-Authenticate realm.
