@@ -3,6 +3,7 @@ package tlsrouter
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -229,8 +230,10 @@ type StatsRegistry struct {
 	routes      sync.Map // string -> *RouteAggregate
 
 	// Subscribers for SSE
-	subscribers sync.Map // string -> chan StatsEvent
-	subID       atomic.Uint64
+	subscribers   sync.Map // string -> chan StatsEvent
+	subID         atomic.Uint64
+	subscriberCnt atomic.Uint64 // Current subscriber count
+	maxSubscribers int         // Max concurrent SSE connections
 
 	// Rate update ticker
 	ticker *time.Ticker
@@ -257,9 +260,10 @@ type RetentionWriter interface {
 func NewStatsRegistry() *StatsRegistry {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &StatsRegistry{
-		clock:  RealClock{},
-		ctx:    ctx,
-		cancel: cancel,
+		clock:         RealClock{},
+		ctx:           ctx,
+		cancel:        cancel,
+		maxSubscribers: 100, // Default: 100 concurrent SSE connections
 	}
 	r.ticker = time.NewTicker(time.Second)
 	go r.rateUpdater()
@@ -270,13 +274,22 @@ func NewStatsRegistry() *StatsRegistry {
 func NewStatsRegistryWithContext(parentCtx context.Context) *StatsRegistry {
 	ctx, cancel := context.WithCancel(parentCtx)
 	r := &StatsRegistry{
-		clock:  RealClock{},
-		ctx:    ctx,
-		cancel: cancel,
+		clock:         RealClock{},
+		ctx:           ctx,
+		cancel:        cancel,
+		maxSubscribers: 100,
 	}
 	r.ticker = time.NewTicker(time.Second)
 	go r.rateUpdater()
 	return r
+}
+
+// SetMaxSubscribers sets the maximum number of SSE subscribers.
+func (r *StatsRegistry) SetMaxSubscribers(max int) {
+	if max < 0 {
+		max = 0 // Unbounded (not recommended)
+	}
+	r.maxSubscribers = max
 }
 
 // SetClock sets the clock for testing.
@@ -437,11 +450,21 @@ func (r *StatsRegistry) ListRoutes() []*RouteAggregate {
 }
 
 // Subscribe returns a channel for SSE updates.
-func (r *StatsRegistry) Subscribe() (string, <-chan StatsEvent) {
+// Returns error if max subscribers exceeded.
+func (r *StatsRegistry) Subscribe() (string, <-chan StatsEvent, error) {
+	// Check subscriber limit
+	if r.maxSubscribers > 0 {
+		currentCount := r.subscriberCnt.Load()
+		if currentCount >= uint64(r.maxSubscribers) {
+			return "", nil, fmt.Errorf("max subscribers (%d) exceeded", r.maxSubscribers)
+		}
+	}
+
 	id := strconv.FormatUint(r.subID.Add(1), 10)
 	ch := make(chan StatsEvent, 100)
 	r.subscribers.Store(id, ch)
-	return id, ch
+	r.subscriberCnt.Add(1)
+	return id, ch, nil
 }
 
 // Unsubscribe removes a subscriber.
@@ -449,6 +472,7 @@ func (r *StatsRegistry) Unsubscribe(id string) {
 	if v, ok := r.subscribers.Load(id); ok {
 		close(v.(chan StatsEvent))
 		r.subscribers.Delete(id)
+		r.subscriberCnt.Add(^uint64(0)) // Decrement
 	}
 }
 

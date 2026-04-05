@@ -175,7 +175,11 @@ func (a *APIServer) streamStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Subscribe to events
-	id, ch := a.Stats.Subscribe()
+	id, ch, err := a.Stats.Subscribe()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	defer a.Stats.Unsubscribe(id)
 
 	// Send initial state
