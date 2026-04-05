@@ -30,6 +30,11 @@ type Server struct {
 	// If empty, no dashboard server is started
 	DashboardAddr string
 
+	// DashboardAuth configures authentication for the dashboard (optional).
+	// If set, uses the same authentication as the API.
+	// Recommended: enable this if dashboard is exposed beyond localhost.
+	DashboardAuth *APIAuthConfig
+
 	listener    net.Listener
 	apiServer   *http.Server
 	dashServer  *http.Server
@@ -79,6 +84,12 @@ func (s *Server) WithDashboard(addr string) *Server {
 	return s
 }
 
+// WithDashboardAuth configures authentication for the dashboard.
+func (s *Server) WithDashboardAuth(auth *APIAuthConfig) *Server {
+	s.DashboardAuth = auth
+	return s
+}
+
 // validateConfig checks that the server configuration is valid.
 func (s *Server) validateConfig() error {
 	// Stats registry is required for API and Dashboard
@@ -94,9 +105,21 @@ func (s *Server) validateConfig() error {
 		}
 	}
 
+	// Validate Dashboard config
 	if s.DashboardAddr != "" {
 		if s.Stats == nil {
 			return fmt.Errorf("Stats is required when DashboardAddr is set")
+		}
+		// SECURITY: Dashboard exposes sensitive connection data (IPs, SNI, backends)
+		// Require authentication or explicit localhost binding
+		if s.DashboardAuth == nil {
+			// Check if binding to localhost only
+			host, _, _ := net.SplitHostPort(s.DashboardAddr)
+			if host != "" && host != "localhost" && host != "127.0.0.1" && host != "::1" {
+				return fmt.Errorf("DashboardAddr %s requires authentication or localhost binding (dashboard exposes sensitive connection data)", s.DashboardAddr)
+			}
+			// Log warning for localhost binding without auth
+			log.Printf("WARNING: Dashboard on localhost without authentication - connection data visible to local users")
 		}
 	}
 
@@ -147,9 +170,14 @@ func (s *Server) ListenAndServe() error {
 
 	// Start dashboard server if configured
 	if s.DashboardAddr != "" {
+		dashHandler := http.Handler(NewDashboardServer(s.Stats))
+		// Wrap with auth if configured
+		if s.DashboardAuth != nil {
+			dashHandler = s.DashboardAuth.AuthenticatedHandler(dashHandler)
+		}
 		s.dashServer = &http.Server{
 			Addr:    s.DashboardAddr,
-			Handler: NewDashboardServer(s.Stats),
+			Handler: dashHandler,
 		}
 		s.wg.Add(1)
 		go func() {
