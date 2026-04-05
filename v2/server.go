@@ -25,11 +25,16 @@ type Server struct {
 	// Use WithAPIAuth to configure
 	APIAuth *APIAuthConfig
 
-	listener  net.Listener
-	apiServer *http.Server
-	wg        sync.WaitGroup
-	ctx       context.Context
-	cancel    context.CancelFunc
+	// DashboardAddr is the address for the web dashboard (optional)
+	// If empty, no dashboard server is started
+	DashboardAddr string
+
+	listener    net.Listener
+	apiServer   *http.Server
+	dashServer  *http.Server
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // NewServer creates a new TLS routing server.
@@ -67,6 +72,12 @@ func (s *Server) WithAPIAuth(auth *APIAuthConfig) *Server {
 	return s
 }
 
+// WithDashboard configures the web dashboard address.
+func (s *Server) WithDashboard(addr string) *Server {
+	s.DashboardAddr = addr
+	return s
+}
+
 // ListenAndServe starts the server.
 func (s *Server) ListenAndServe() error {
 	var err error
@@ -93,12 +104,30 @@ func (s *Server) ListenAndServe() error {
 			Addr:    s.APIAddr,
 			Handler: apiHandler,
 		}
-		s.wg.Go(func() {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
 			log.Printf("stats API listening on %s", s.APIAddr)
 			if err := s.apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Printf("API server error: %v", err)
 			}
-		})
+		}()
+	}
+
+	// Start dashboard server if configured
+	if s.DashboardAddr != "" && s.Stats != nil {
+		s.dashServer = &http.Server{
+			Addr:    s.DashboardAddr,
+			Handler: NewDashboardServer(s.Stats),
+		}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			log.Printf("dashboard listening on %s", s.DashboardAddr)
+			if err := s.dashServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("dashboard server error: %v", err)
+			}
+		}()
 	}
 
 	for {
@@ -135,6 +164,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Shutdown API server if running
 	if s.apiServer != nil {
 		_ = s.apiServer.Shutdown(ctx)
+	}
+
+	// Shutdown dashboard server if running
+	if s.dashServer != nil {
+		_ = s.dashServer.Shutdown(ctx)
 	}
 
 	if s.listener != nil {

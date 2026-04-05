@@ -11,16 +11,21 @@ require (
 	github.com/libdns/duckdns v0.3.0
 	github.com/mholt/acmez/v3 v3.1.4
 	github.com/pires/go-proxyproto v0.9.0
+	github.com/starfederation/datastar-go v1.1.0
 	github.com/therootcompany/golib/auth v1.1.1
 	golang.org/x/sys v0.40.0
 )
 
 require (
+	github.com/CAFxX/httpcompression v0.0.9 // indirect
+	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/caddyserver/zerossl v0.1.4 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/miekg/dns v1.1.69 // indirect
 	github.com/therootcompany/golib/io/transform/gsheet2csv v1.0.3 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
