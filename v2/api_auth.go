@@ -3,6 +3,7 @@ package tlsrouter
 import (
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/therootcompany/golib/auth"
 )
@@ -31,20 +32,18 @@ func (c *APIAuthConfig) AuthenticatedHandler(next http.Handler) http.Handler {
 	if realm == "" {
 		realm = "Basic"
 	}
-	ra := auth.NewBasicRequestAuthenticator(c.Authenticator)
-	ra.BasicRealm = realm
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		credential, err := ra.Authenticate(r)
+		principal, err := c.authenticateRequest(r)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", ra.BasicRealm)
+			w.Header().Set("WWW-Authenticate", `Basic realm="`+realm+`"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
 		// Check permissions if required
 		if len(c.RequiredPermissions) > 0 {
-			perms := credential.Permissions()
+			perms := principal.Permissions()
 			hasPerm := false
 			for _, required := range c.RequiredPermissions {
 				if slices.Contains(perms, required) {
@@ -60,4 +59,25 @@ func (c *APIAuthConfig) AuthenticatedHandler(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authenticateRequest extracts credentials from HTTP request and authenticates.
+// Supports: Bearer token, Basic auth, and ?access_token= query param.
+func (c *APIAuthConfig) authenticateRequest(r *http.Request) (auth.BasicPrinciple, error) {
+	// Bearer token
+	if token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found && token != "" {
+		return c.Authenticator.Authenticate("", token)
+	}
+
+	// Basic auth
+	if user, pass, ok := r.BasicAuth(); ok {
+		return c.Authenticator.Authenticate(user, pass)
+	}
+
+	// Query param access_token
+	if token := r.URL.Query().Get("access_token"); token != "" {
+		return c.Authenticator.Authenticate("", token)
+	}
+
+	return nil, auth.ErrNoCredentials
 }
