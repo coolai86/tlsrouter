@@ -79,8 +79,42 @@ func (s *Server) WithDashboard(addr string) *Server {
 	return s
 }
 
+// validateConfig checks that the server configuration is valid.
+func (s *Server) validateConfig() error {
+	// Stats registry is required for API and Dashboard
+	if s.APIAddr != "" {
+		if s.Stats == nil {
+			return fmt.Errorf("Stats is required when APIAddr is set")
+		}
+		if s.APIAuth == nil {
+			return fmt.Errorf("APIAuth is required when APIAddr is set (stats API exposes sensitive data)")
+		}
+		if err := s.APIAuth.Validate(); err != nil {
+			return fmt.Errorf("APIAuth validation failed: %w", err)
+		}
+	}
+
+	if s.DashboardAddr != "" {
+		if s.Stats == nil {
+			return fmt.Errorf("Stats is required when DashboardAddr is set")
+		}
+	}
+
+	// Handler is always required
+	if s.Handler == nil {
+		return fmt.Errorf("Handler is required")
+	}
+
+	return nil
+}
+
 // ListenAndServe starts the server.
 func (s *Server) ListenAndServe() error {
+	// Validate configuration before starting
+	if err := s.validateConfig(); err != nil {
+		return err
+	}
+
 	var err error
 	s.listener, err = net.Listen("tcp", s.Addr)
 	if err != nil {
@@ -95,14 +129,7 @@ func (s *Server) ListenAndServe() error {
 	log.Printf("tlsrouter listening on %s (instance: %s)", actualAddr, s.Listeners.InstanceID())
 
 	// Start API server if configured
-	if s.APIAddr != "" && s.Stats != nil {
-		// Auth is required for stats API - it exposes sensitive connection data
-		if s.APIAuth == nil {
-			return fmt.Errorf("APIAuth is required when APIAddr is set (stats API exposes sensitive data)")
-		}
-		if err := s.APIAuth.Validate(); err != nil {
-			return fmt.Errorf("APIAuth validation failed: %w", err)
-		}
+	if s.APIAddr != "" {
 		apiHandler := s.APIAuth.AuthenticatedHandler(http.Handler(NewAPIServer(s.Stats)))
 		s.apiServer = &http.Server{
 			Addr:    s.APIAddr,
@@ -119,7 +146,7 @@ func (s *Server) ListenAndServe() error {
 	}
 
 	// Start dashboard server if configured
-	if s.DashboardAddr != "" && s.Stats != nil {
+	if s.DashboardAddr != "" {
 		s.dashServer = &http.Server{
 			Addr:    s.DashboardAddr,
 			Handler: NewDashboardServer(s.Stats),
