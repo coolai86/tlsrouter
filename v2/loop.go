@@ -2,6 +2,7 @@ package tlsrouter
 
 import (
 	"net"
+	"sort"
 	"sync"
 
 	"github.com/google/uuid"
@@ -74,7 +75,7 @@ func (r *ListenerRegistry) InstanceID() InstanceID {
 	return r.instance
 }
 
-// Listeners returns all registered listener addresses.
+// Listeners returns all registered listener addresses, sorted for consistency.
 func (r *ListenerRegistry) Listeners() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -82,6 +83,7 @@ func (r *ListenerRegistry) Listeners() []string {
 	for addr := range r.listeners {
 		result = append(result, addr)
 	}
+	sort.Strings(result)
 	return result
 }
 

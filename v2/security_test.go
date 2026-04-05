@@ -175,3 +175,33 @@ func TestIsKnownALPN(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSuspiciousHostname_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		expected bool
+	}{
+		{"metadata lowercase", "metadata", true},
+		{"metadata uppercase", "METADATA", true},
+		{"metadata mixed case", "Metadata", true},
+		{"metadata.google lowercase", "metadata.google", true},
+		{"metadata.google uppercase", "METADATA.GOOGLE", true},
+		{"instance-data lowercase", "instance-data", true},
+		{"instance-data uppercase", "INSTANCE-DATA", true},
+		{"normal domain", "example.com", false},
+		{"subdomain", "api.example.com", false},
+		{"metadata subdomain", "api.metadata.example.com", true},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := NewSecurityValidator(nil)
+			result := v.isSuspiciousHostname(tt.host)
+			if result != tt.expected {
+				t.Errorf("isSuspiciousHostname(%q) = %v, want %v", tt.host, result, tt.expected)
+			}
+		})
+	}
+}

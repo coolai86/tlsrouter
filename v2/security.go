@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -248,7 +249,11 @@ func (v *SecurityValidator) ValidateIP(ip net.IP) error {
 
 // isSuspiciousHostname checks for suspicious patterns in hostnames.
 func (v *SecurityValidator) isSuspiciousHostname(host string) bool {
+	// Normalize to lowercase for case-insensitive matching
+	host = strings.ToLower(host)
+
 	// Block common metadata service hostnames
+	// Check both exact match and as a subdomain component
 	suspicious := []string{
 		"metadata",
 		"metadata.google",
@@ -257,8 +262,20 @@ func (v *SecurityValidator) isSuspiciousHostname(host string) bool {
 		"169.254.169.254",
 	}
 	for _, s := range suspicious {
-		if host == s || host == s+"." || 
-		   len(host) > len(s) && host[:len(s)+1] == s+"." {
+		// Exact match
+		if host == s {
+			return true
+		}
+		// Leading subdomain: "metadata." or "metadata.google."
+		if strings.HasPrefix(host, s+".") {
+			return true
+		}
+		// Trailing subdomain: ".metadata" or ".metadata.google"
+		if strings.HasSuffix(host, "."+s) {
+			return true
+		}
+		// Middle component: ".metadata." or ".metadata.google."
+		if strings.Contains(host, "."+s+".") {
 			return true
 		}
 	}
