@@ -239,6 +239,9 @@ type StatsRegistry struct {
 	// Historical logging (optional)
 	retention  RetentionWriter
 	retentionMu sync.Mutex
+
+	// Clock for testing (defaults to RealClock)
+	clock Clock
 }
 
 // RetentionWriter is an optional interface for logging connection history.
@@ -251,10 +254,24 @@ type RetentionWriter interface {
 func NewStatsRegistry() *StatsRegistry {
 	r := &StatsRegistry{
 		tickerDone: make(chan struct{}),
+		clock:      RealClock{},
 	}
 	r.ticker = time.NewTicker(time.Second)
 	go r.rateUpdater()
 	return r
+}
+
+// SetClock sets the clock for testing.
+func (r *StatsRegistry) SetClock(c Clock) {
+	r.clock = c
+}
+
+// now returns the current time from the configured clock.
+func (r *StatsRegistry) now() time.Time {
+	if r.clock != nil {
+		return r.clock.Now()
+	}
+	return RealClock{}.Now()
 }
 
 // SetRetention sets the retention writer for historical logging.
@@ -267,11 +284,11 @@ func (r *StatsRegistry) SetRetention(w RetentionWriter) {
 // TrackConnection registers a new connection.
 func (r *StatsRegistry) TrackConnection(id string, srcAddr, dstAddr net.Addr) *ConnectionStats {
 	stats := &ConnectionStats{
-		ID:        id,
-		SrcAddr:   srcAddr.String(),
-		DstAddr:   dstAddr.String(),
-		Started:   time.Now(),
-		State:     StateHandshaking,
+		ID:      id,
+		SrcAddr: srcAddr.String(),
+		DstAddr: dstAddr.String(),
+		Started: r.now(),
+		State:   StateHandshaking,
 	}
 	r.connections.Store(id, stats)
 	return stats
@@ -313,7 +330,7 @@ func (r *StatsRegistry) UpdateBytes(id string, bytesIn, bytesOut, backendIn, bac
 		atomic.AddUint64(&stats.BytesOut, uint64(bytesOut))
 		atomic.AddUint64(&stats.BackendBytesIn, uint64(backendIn))
 		atomic.AddUint64(&stats.BackendBytesOut, uint64(backendOut))
-		now := time.Now()
+		now := r.now()
 		stats.LastRead = now
 		stats.LastWrite = now
 	}
@@ -339,7 +356,7 @@ func (r *StatsRegistry) CloseConnection(id string, reason CloseReason) {
 		// Broadcast disconnect event
 		r.broadcast(StatsEvent{
 			Type:      "disconnect",
-			Timestamp: time.Now(),
+			Timestamp: r.now(),
 			Data:      mustMarshal(stats),
 		})
 
@@ -482,7 +499,7 @@ func (r *StatsRegistry) updateRates() {
 		}
 		agg.ConnsPerSec = float64(totalConns) / 5.0
 		agg.RateInBps = uint64(totalRate / 5)
-		agg.lastUpdate = time.Now()
+		agg.lastUpdate = r.now()
 
 		return true
 	})
