@@ -408,11 +408,23 @@ func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tl
 
 			// Add X-Forwarded-SNI for backend to know which certificate was used
 			if decision.Domain != "" {
+				// Validate to prevent header injection
+				if err := ValidateDomain(decision.Domain); err != nil {
+					h.logError("invalid domain in header", "error", err, "domain", decision.Domain)
+					r.Out.Header.Set(HeaderTLSrouterError, "invalid-domain")
+					return
+				}
 				r.Out.Header.Set("X-Forwarded-SNI", decision.Domain)
 			}
 
 			// Add X-Forwarded-ALPN for backend to know negotiated protocol
 			if decision.ALPN != "" {
+				// Validate to prevent header injection
+				if err := ValidateALPN(decision.ALPN); err != nil {
+					h.logError("invalid ALPN in header", "error", err, "alpn", decision.ALPN)
+					r.Out.Header.Set(HeaderTLSrouterError, "invalid-alpn")
+					return
+				}
 				r.Out.Header.Set("X-Forwarded-ALPN", decision.ALPN)
 			}
 

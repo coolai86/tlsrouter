@@ -104,9 +104,10 @@ func IsLoopError(err error) bool {
 
 // HopCountHeaders are used for loop detection in terminated HTTP.
 const (
-	HeaderTLSrouterID   = "X-Tlsrouter-Id"
-	HeaderTLSrouterHops = "X-Tlsrouter-Hops"
-	HeaderTLSrouterVia  = "X-Tlsrouter-Via" // Comma-separated instance IDs
+	HeaderTLSrouterID    = "X-Tlsrouter-Id"
+	HeaderTLSrouterHops  = "X-Tlsrouter-Hops"
+	HeaderTLSrouterVia   = "X-Tlsrouter-Via" // Comma-separated instance IDs
+	HeaderTLSrouterError = "X-Tlsrouter-Error"
 )
 
 // MaxHops is the maximum number of TLSrouter hops allowed.

@@ -19,7 +19,11 @@ type AuthRateLimiter struct {
 	// BlockDuration is how long to block after exceeding max attempts
 	BlockDuration time.Duration
 
-	mu      sync.Mutex
+	// Clock provides the current time. Use MockClock for testing.
+	// Defaults to RealClock in production.
+	Clock Clock
+
+	mu       sync.Mutex
 	attempts map[string]*attemptRecord
 }
 
@@ -34,9 +38,10 @@ type attemptRecord struct {
 // - 5 minute block
 func NewAuthRateLimiter() *AuthRateLimiter {
 	return &AuthRateLimiter{
-		MaxAttempts:    5,
-		Window:         time.Minute,
-		BlockDuration:  5 * time.Minute,
+		MaxAttempts:   5,
+		Window:        time.Minute,
+		BlockDuration: 5 * time.Minute,
+		Clock:         RealClock{},
 		attempts:      make(map[string]*attemptRecord),
 	}
 }
@@ -47,7 +52,7 @@ func (r *AuthRateLimiter) Check(ip string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.clock().Now()
 	record, exists := r.attempts[ip]
 
 	if exists {
@@ -92,7 +97,7 @@ func (r *AuthRateLimiter) RecordFailure(ip string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.clock().Now()
 	record, exists := r.attempts[ip]
 	if !exists {
 		record = &attemptRecord{firstTry: now}
@@ -119,7 +124,7 @@ func (r *AuthRateLimiter) Cleanup() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.clock().Now()
 	for ip, record := range r.attempts {
 		// Remove if window expired and not blocked
 		if now.Sub(record.firstTry) > r.Window && record.blocked.IsZero() {
@@ -130,6 +135,14 @@ func (r *AuthRateLimiter) Cleanup() {
 			delete(r.attempts, ip)
 		}
 	}
+}
+
+// clock returns the configured clock or the default real clock.
+func (r *AuthRateLimiter) clock() Clock {
+	if r.Clock != nil {
+		return r.Clock
+	}
+	return RealClock{}
 }
 
 // RateLimitError is returned when rate limited.
