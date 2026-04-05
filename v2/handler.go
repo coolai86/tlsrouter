@@ -104,6 +104,10 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	}
 
 	// Build base TLS config with MinVersion
+	// NOTE: TLS 1.2 is the minimum for broad compatibility.
+	// Consider TLS 1.3 (tls.VersionTLS13) for new deployments
+	// where all clients support it. TLS 1.2 is still secure
+	// with proper cipher suites (Go defaults are good).
 	baseTLSConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12, // SECURITY: Require TLS 1.2+
 	}

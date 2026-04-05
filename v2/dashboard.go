@@ -35,6 +35,9 @@ func NewDashboardServer(stats *StatsRegistry) *DashboardServer {
 
 // ServeHTTP implements http.Handler.
 func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Limit request body size to prevent DoS
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodySize)
+
 	switch r.URL.Path {
 	case "/dashboard", "/dashboard/":
 		d.serveDashboard(w, r)

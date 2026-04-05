@@ -6,6 +6,9 @@ import (
 	"strconv"
 )
 
+// MaxRequestBodySize limits request body size to prevent DoS.
+const MaxRequestBodySize = 1 << 20 // 1MB
+
 // APIServer provides HTTP endpoints for connection stats.
 type APIServer struct {
 	Stats *StatsRegistry
@@ -18,6 +21,9 @@ func NewAPIServer(stats *StatsRegistry) *APIServer {
 
 // ServeHTTP implements http.Handler.
 func (a *APIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// SECURITY: Limit request body size to prevent DoS
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodySize)
+
 	// Set JSON content type
 	w.Header().Set("Content-Type", "application/json")
 
