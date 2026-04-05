@@ -14,8 +14,11 @@ import (
 type RouteAction int
 
 const (
+	// ActionNone means no action was set (deny by default).
+	// This is the zero value for safety - uninitialized structs deny access.
+	ActionNone RouteAction = iota
 	// ActionTerminate means TLS should be terminated and traffic proxied as HTTP.
-	ActionTerminate RouteAction = iota
+	ActionTerminate
 	// ActionPassthrough means raw TCP should be tunneled to backend.
 	ActionPassthrough
 )

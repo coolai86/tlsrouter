@@ -186,6 +186,11 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 				return nil, decisionErr
 			}
 
+			// SECURITY: Validate routing decision - reject uninitialized (ActionNone)
+			if decision.Action == ActionNone {
+				return nil, fmt.Errorf("invalid routing decision: no action specified")
+			}
+
 			// SECURITY: Validate ALPN protocols
 			if h.Security != nil {
 				if err := h.Security.ValidateALPNList(hello.SupportedProtos); err != nil {
