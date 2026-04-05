@@ -1,9 +1,11 @@
 package tlsrouter
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
+	"time"
 )
 
 // SecurityConfig holds security-related configuration.
@@ -29,15 +31,30 @@ type SecurityConfig struct {
 	// EnableLoopDetection enables the listener registry checks.
 	// Default: true
 	EnableLoopDetection bool
+
+	// ResolveBeforeValidation enables DNS resolution before IP validation.
+	// This prevents SSRF via malicious domains that resolve to blocked IPs.
+	// Default: true
+	ResolveBeforeValidation bool
+
+	// DNSResolver is the resolver to use for DNS lookups.
+	// If nil, uses net.DefaultResolver.
+	DNSResolver *net.Resolver
+
+	// ResolveTimeout is the timeout for DNS resolution.
+	// Default: 5s
+	ResolveTimeout time.Duration
 }
 
 // DefaultSecurityConfig returns safe defaults for VPC environments.
 func DefaultSecurityConfig() *SecurityConfig {
 	return &SecurityConfig{
-		BlockedNetworks:    SafeBlockedNetworks(),
-		MaxALPNLength:      256,
-		DialTimeout:        500, // 500ms - aggressive for VPC
-		EnableLoopDetection: true,
+		BlockedNetworks:        SafeBlockedNetworks(),
+		MaxALPNLength:          256,
+		DialTimeout:            500, // 500ms - aggressive for VPC
+		EnableLoopDetection:    true,
+		ResolveBeforeValidation: true,
+		ResolveTimeout:         5 * time.Second,
 	}
 }
 
@@ -99,6 +116,8 @@ func NewSecurityValidator(config *SecurityConfig) *SecurityValidator {
 
 // ValidateBackend checks if a backend address is safe to dial.
 // It blocks metadata endpoints, loopback, and other dangerous addresses.
+// For hostnames, it only checks suspicious patterns - use ResolveAndValidateBackend
+// for full DNS-based validation.
 func (v *SecurityValidator) ValidateBackend(backend string) error {
 	host, _, err := net.SplitHostPort(backend)
 	if err != nil {
@@ -118,6 +137,84 @@ func (v *SecurityValidator) ValidateBackend(backend string) error {
 	}
 
 	return v.ValidateIP(ip)
+}
+
+// ResolveAndValidateBackend resolves a hostname and validates all resulting IPs.
+// This prevents SSRF attacks via malicious domains that resolve to blocked IPs.
+// For IP backends, it validates directly without DNS resolution.
+func (v *SecurityValidator) ResolveAndValidateBackend(ctx context.Context, backend string) error {
+	host, _, err := net.SplitHostPort(backend)
+	if err != nil {
+		return fmt.Errorf("invalid backend address: %s", backend)
+	}
+
+	// Check for suspicious hostnames first
+	if v.isSuspiciousHostname(host) {
+		return fmt.Errorf("suspicious hostname blocked: %s", host)
+	}
+
+	// If it's an IP, validate directly
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return v.ValidateIP(ip)
+	}
+
+	// It's a hostname - resolve and validate all IPs
+	v.mu.RLock()
+	resolveTimeout := v.config.ResolveTimeout
+	resolveBefore := v.config.ResolveBeforeValidation
+	dnsResolver := v.config.DNSResolver
+	v.mu.RUnlock()
+
+	// If resolve-before-validation is disabled, just warn
+	if !resolveBefore {
+		// Return nil but log warning in production
+		// Security risk: hostname could resolve to blocked IP
+		return nil
+	}
+
+	// Use configured timeout
+	if resolveTimeout <= 0 {
+		resolveTimeout = 5 * time.Second
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+
+	var ips []net.IP
+	var resolveErr error
+
+	if dnsResolver != nil {
+		// Use custom resolver
+		var addrs []string
+		addrs, resolveErr = dnsResolver.LookupHost(ctx, host)
+		for _, addr := range addrs {
+			if ip := net.ParseIP(addr); ip != nil {
+				ips = append(ips, ip)
+			}
+		}
+	} else {
+		// Use net.LookupIP with default resolver
+		ips, resolveErr = net.LookupIP(host)
+	}
+
+	if resolveErr != nil {
+		return fmt.Errorf("DNS resolution failed for %s: %w", host, resolveErr)
+	}
+
+	if len(ips) == 0 {
+		return fmt.Errorf("no IPs resolved for %s", host)
+	}
+
+	// Validate ALL resolved IPs
+	for _, ip := range ips {
+		if err := v.ValidateIP(ip); err != nil {
+			return fmt.Errorf("hostname %s resolves to blocked IP %s: %w", host, ip, err)
+		}
+	}
+
+	return nil
 }
 
 // ValidateIP checks if an IP address is safe to dial.
@@ -245,4 +342,18 @@ func (v *SecurityValidator) SetBlockedNetworks(networks []net.IPNet) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.config.BlockedNetworks = networks
+}
+
+// SetResolveBeforeValidation enables or disables DNS resolution before validation.
+func (v *SecurityValidator) SetResolveBeforeValidation(enabled bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.config.ResolveBeforeValidation = enabled
+}
+
+// SetDNSResolver sets a custom DNS resolver.
+func (v *SecurityValidator) SetDNSResolver(resolver *net.Resolver) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.config.DNSResolver = resolver
 }

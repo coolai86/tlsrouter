@@ -528,9 +528,9 @@ func (h *Handler) dial(addr string) (net.Conn, error) {
 
 // dialContext creates a backend connection with proper timeouts and keepalive.
 func (h *Handler) dialContext(ctx context.Context, addr string) (net.Conn, error) {
-	// SECURITY: Validate backend address
+	// SECURITY: Validate backend address (including DNS resolution for hostnames)
 	if h.Security != nil {
-		if err := h.Security.ValidateBackend(addr); err != nil {
+		if err := h.Security.ResolveAndValidateBackend(ctx, addr); err != nil {
 			return nil, fmt.Errorf("backend validation failed: %w", err)
 		}
 	}
