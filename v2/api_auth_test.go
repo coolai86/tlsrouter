@@ -24,9 +24,9 @@ func (m *MockCredential) Permissions() []string {
 
 // MockAuthenticator implements auth.BasicAuthenticator for testing
 type MockAuthenticator struct {
-	ValidUser  string
-	ValidPass  string
-	Perms      []string
+	ValidUser string
+	ValidPass string
+	Perms     []string
 }
 
 func (m *MockAuthenticator) Authenticate(user, pass string) (auth.BasicPrinciple, error) {
@@ -48,35 +48,36 @@ func (e *AuthError) Error() string {
 	return e.Message
 }
 
-func TestAPIAuthConfig_AuthenticatedHandler_NoAuth(t *testing.T) {
-	// No auth configured - should pass through
-	authConfig := &APIAuthConfig{}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+func TestAPIAuthConfig_AuthenticatedHandler_RequiresAuth(t *testing.T) {
+	// Auth is REQUIRED - nil config must panic
+	t.Run("nil config panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic with nil config")
+			}
+		}()
+		var authConfig *APIAuthConfig
+		authConfig.AuthenticatedHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	})
 
-	wrapped := authConfig.AuthenticatedHandler(handler)
-
-	// When no auth is configured, the handler is returned unchanged
-	// Test that it still works
-	req := httptest.NewRequest("GET", "/api/connections", nil)
-	rec := httptest.NewRecorder()
-	wrapped.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", rec.Code)
-	}
+	// Nil authenticator must panic
+	t.Run("nil authenticator panics", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic with nil authenticator")
+			}
+		}()
+		authConfig := &APIAuthConfig{}
+		authConfig.AuthenticatedHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	})
 }
 
 func TestAPIAuthConfig_AuthenticatedHandler_BasicAuth(t *testing.T) {
-	authConfig := &APIAuthConfig{
-		Authenticator: &MockAuthenticator{
-			ValidUser: "admin",
-			ValidPass: "secret",
-			Perms:     []string{"admin"},
-		},
-	}
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "admin",
+		ValidPass: "secret",
+		Perms:     []string{"admin"},
+	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -107,13 +108,11 @@ func TestAPIAuthConfig_AuthenticatedHandler_BasicAuth(t *testing.T) {
 }
 
 func TestAPIAuthConfig_AuthenticatedHandler_BearerToken(t *testing.T) {
-	authConfig := &APIAuthConfig{
-		Authenticator: &MockAuthenticator{
-			ValidUser: "",     // Bearer tokens authenticate with empty username
-			ValidPass: "test-token",
-			Perms:     []string{"admin"},
-		},
-	}
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "", // Bearer tokens authenticate with empty username
+		ValidPass: "test-token",
+		Perms:     []string{"admin"},
+	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -143,13 +142,11 @@ func TestAPIAuthConfig_AuthenticatedHandler_BearerToken(t *testing.T) {
 }
 
 func TestAPIAuthConfig_AuthenticatedHandler_QueryParam(t *testing.T) {
-	authConfig := &APIAuthConfig{
-		Authenticator: &MockAuthenticator{
-			ValidUser: "",
-			ValidPass: "query-token",
-			Perms:     []string{"admin"},
-		},
-	}
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "",
+		ValidPass: "query-token",
+		Perms:     []string{"admin"},
+	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -168,14 +165,11 @@ func TestAPIAuthConfig_AuthenticatedHandler_QueryParam(t *testing.T) {
 }
 
 func TestAPIAuthConfig_AuthenticatedHandler_Permissions(t *testing.T) {
-	authConfig := &APIAuthConfig{
-		Authenticator: &MockAuthenticator{
-			ValidUser: "viewer",
-			ValidPass: "pass",
-			Perms:     []string{"viewer"},
-		},
-		RequiredPermissions: []string{"admin"},
-	}
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "viewer",
+		ValidPass: "pass",
+		Perms:     []string{"viewer"},
+	}, "admin") // require admin permission
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -194,11 +188,12 @@ func TestAPIAuthConfig_AuthenticatedHandler_Permissions(t *testing.T) {
 	}
 
 	// Test user with required permission
-	authConfig.Authenticator = &MockAuthenticator{
+	authConfig = MustAuth(&MockAuthenticator{
 		ValidUser: "admin",
 		ValidPass: "secret",
 		Perms:     []string{"admin"},
-	}
+	}, "admin")
+
 	wrapped = authConfig.AuthenticatedHandler(handler)
 
 	req = httptest.NewRequest("GET", "/api/connections", nil)
@@ -212,12 +207,10 @@ func TestAPIAuthConfig_AuthenticatedHandler_Permissions(t *testing.T) {
 }
 
 func TestAPIAuthConfig_AuthenticatedHandler_NoCredentials(t *testing.T) {
-	authConfig := &APIAuthConfig{
-		Authenticator: &MockAuthenticator{
-			ValidUser: "admin",
-			ValidPass: "secret",
-		},
-	}
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "admin",
+		ValidPass: "secret",
+	})
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -237,5 +230,44 @@ func TestAPIAuthConfig_AuthenticatedHandler_NoCredentials(t *testing.T) {
 	// Check WWW-Authenticate header is set
 	if rec.Header().Get("WWW-Authenticate") == "" {
 		t.Error("Expected WWW-Authenticate header to be set")
+	}
+}
+
+func TestMustAuth(t *testing.T) {
+	// MustAuth with valid authenticator
+	authConfig := MustAuth(&MockAuthenticator{
+		ValidUser: "admin",
+		ValidPass: "secret",
+	})
+	if authConfig == nil {
+		t.Error("Expected non-nil config")
+	}
+
+	// MustAuth with nil authenticator must panic
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected panic with nil authenticator")
+		}
+	}()
+	MustAuth(nil)
+}
+
+func TestAPIAuthConfig_Validate(t *testing.T) {
+	// Nil config
+	var nilConfig *APIAuthConfig
+	if err := nilConfig.Validate(); err == nil {
+		t.Error("Expected error for nil config")
+	}
+
+	// Nil authenticator
+	config := &APIAuthConfig{}
+	if err := config.Validate(); err == nil {
+		t.Error("Expected error for nil authenticator")
+	}
+
+	// Valid config
+	config = MustAuth(&MockAuthenticator{})
+	if err := config.Validate(); err != nil {
+		t.Errorf("Expected no error, got %v", err)
 	}
 }

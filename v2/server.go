@@ -3,6 +3,7 @@ package tlsrouter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -95,11 +96,14 @@ func (s *Server) ListenAndServe() error {
 
 	// Start API server if configured
 	if s.APIAddr != "" && s.Stats != nil {
-		apiHandler := http.Handler(NewAPIServer(s.Stats))
-		// Wrap with auth if configured
-		if s.APIAuth != nil {
-			apiHandler = s.APIAuth.AuthenticatedHandler(apiHandler)
+		// Auth is required for stats API - it exposes sensitive connection data
+		if s.APIAuth == nil {
+			return fmt.Errorf("APIAuth is required when APIAddr is set (stats API exposes sensitive data)")
 		}
+		if err := s.APIAuth.Validate(); err != nil {
+			return fmt.Errorf("APIAuth validation failed: %w", err)
+		}
+		apiHandler := s.APIAuth.AuthenticatedHandler(http.Handler(NewAPIServer(s.Stats)))
 		s.apiServer = &http.Server{
 			Addr:    s.APIAddr,
 			Handler: apiHandler,
