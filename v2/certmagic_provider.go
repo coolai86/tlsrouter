@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"path"
 	"sync"
 
@@ -51,13 +52,10 @@ func NewCertmagicCertProvider(cfg CertmagicConfig) (*CertmagicCertProvider, erro
 		Storage: storage,
 		OnEvent: func(ctx context.Context, eventName string, data map[string]any) error {
 			if eventName == "cert_obtaining" {
-				if id, ok := data["identifier"]; ok {
-					fmt.Printf("Obtaining certificate for %s\n", id)
-				}
+				// Log without sensitive domain details
+				log.Printf("Obtaining certificate for %s", RedactDomain(fmt.Sprintf("%v", data["identifier"])))
 			} else if eventName == "cert_obtained" {
-				if id, ok := data["identifier"]; ok {
-					fmt.Printf("Certificate obtained for %s\n", id)
-				}
+				log.Printf("Certificate obtained for %s", RedactDomain(fmt.Sprintf("%v", data["identifier"])))
 			}
 			return nil
 		},

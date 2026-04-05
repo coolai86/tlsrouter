@@ -194,7 +194,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 			// SECURITY: Validate ALPN protocols
 			if h.Security != nil {
 				if err := h.Security.ValidateALPNList(hello.SupportedProtos); err != nil {
-					h.logError("ALPN validation failed", "error", err, "sni", hello.ServerName)
+					h.logError("ALPN validation failed", "error", err)
 					return nil, fmt.Errorf("invalid ALPN: %w", err)
 				}
 			}
@@ -260,7 +260,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 			}
 			return h.tunnelTCP(ctx, tracking, decision)
 		}
-		h.logError("handshake failed", "error", err, "domain", decision.Domain)
+		h.logError("handshake failed", "error", err)
 		// Record error close
 		if h.Stats != nil {
 			h.Stats.CloseConnection(connID, CloseReasonError)
@@ -282,7 +282,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) error {
 	if decision.Backend == "" && decision.ALPN == "acme-tls/1" {
 		if cmp, ok := h.Certs.(*CertmagicCertProvider); ok {
 			if cmp.IsManaged(decision.Domain) {
-				h.logInfo("ACME challenge handled by certmagic", "domain", decision.Domain)
+				h.logInfo("ACME challenge handled by certmagic")
 				certmagicHandledACME = true
 			}
 		}
@@ -301,7 +301,7 @@ func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decisio
 	// Loop detection: check if backend is one of our listeners
 	if h.Listeners != nil {
 		if err := h.Listeners.CheckLoop(decision.Backend, "", 0); err != nil {
-			h.logError("loop detected", "error", err, "backend", decision.Backend)
+			h.logError("loop detected", "error", err, "backend", RedactBackend(decision.Backend))
 			if h.Stats != nil {
 				h.Stats.CloseConnection(tracking.statsID, CloseReasonError)
 			}
@@ -312,7 +312,7 @@ func (h *Handler) tunnelTCP(ctx context.Context, tracking *trackingConn, decisio
 	start := time.Now()
 	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
-		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
+		h.logError("backend dial failed", "error", err, "backend", RedactBackend(decision.Backend))
 		// Record backend error
 		if h.Stats != nil {
 			h.Stats.CloseConnection(tracking.statsID, CloseReasonError)
@@ -352,7 +352,7 @@ func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, decision Dec
 	// Loop detection: check if backend is one of our listeners
 	if h.Listeners != nil {
 		if err := h.Listeners.CheckLoop(decision.Backend, "", 0); err != nil {
-			h.logError("loop detected", "error", err, "backend", decision.Backend)
+			h.logError("loop detected", "error", err, "backend", RedactBackend(decision.Backend))
 			return err
 		}
 	}
@@ -366,7 +366,7 @@ func (h *Handler) proxyHTTP(ctx context.Context, tlsConn *tls.Conn, decision Dec
 	start := time.Now()
 	beConn, err := h.dialContext(ctx, decision.Backend)
 	if err != nil {
-		h.logError("backend dial failed", "error", err, "backend", decision.Backend)
+		h.logError("backend dial failed", "error", err, "backend", RedactBackend(decision.Backend))
 		return err
 	}
 	defer beConn.Close()
@@ -415,7 +415,7 @@ func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tl
 			if decision.Domain != "" {
 				// Validate to prevent header injection
 				if err := ValidateDomain(decision.Domain); err != nil {
-					h.logError("invalid domain in header", "error", err, "domain", decision.Domain)
+					h.logError("invalid domain in header", "error", err)
 					r.Out.Header.Set(HeaderTLSrouterError, "invalid-domain")
 					return
 				}
@@ -439,7 +439,7 @@ func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tl
 				incoming := ParseHopInfo(r.In.Header)
 				// Check for loop before proxying
 				if err := h.Listeners.CheckLoop(decision.Backend, incoming.ID, incoming.Hops); err != nil {
-					h.logError("loop detected in HTTP proxy", "error", err, "backend", decision.Backend)
+					h.logError("loop detected in HTTP proxy", "error", err, "backend", RedactBackend(decision.Backend))
 					// The error will be handled by ErrorHandler
 					r.Out.Header.Set(HeaderTLSrouterID, "loop-detected")
 					return
@@ -462,7 +462,7 @@ func (h *Handler) proxyHTTPWithForwardedHeaders(ctx context.Context, tlsConn *tl
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			h.logError("proxy error", "error", err, "backend", decision.Backend)
+			h.logError("proxy error", "error", err, "backend", RedactBackend(decision.Backend))
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
 	}
