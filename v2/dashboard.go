@@ -77,7 +77,7 @@ func (d *DashboardServer) streamUpdates(w http.ResponseWriter, r *http.Request) 
 func (d *DashboardServer) sendConnections(sse *datastar.ServerSentEventGenerator) {
 	connections := d.Stats.ListConnections()
 
-	html := `<table class="connections-table">
+	html := `<table>
 <thead>
 <tr><th>ID</th><th>SNI</th><th>ALPN</th><th>Backend</th><th>Bytes In</th><th>Bytes Out</th><th>Rate In</th><th>Rate Out</th><th>Age</th></tr>
 </thead>
@@ -87,9 +87,9 @@ func (d *DashboardServer) sendConnections(sse *datastar.ServerSentEventGenerator
 		age := time.Since(c.Started).Round(time.Second)
 		html += fmt.Sprintf(`<tr>
 <td class="id">%s</td>
-<td class="sni">%s</td>
-<td class="alpn">%s</td>
-<td class="backend">%s</td>
+<td>%s</td>
+<td>%s</td>
+<td>%s</td>
 <td class="bytes">%s</td>
 <td class="bytes">%s</td>
 <td class="rate">%s/s</td>
@@ -121,7 +121,7 @@ func (d *DashboardServer) sendConnections(sse *datastar.ServerSentEventGenerator
 func (d *DashboardServer) sendRoutes(sse *datastar.ServerSentEventGenerator) {
 	routes := d.Stats.ListRoutes()
 
-	html := `<table class="routes-table">
+	html := `<table>
 <thead>
 <tr><th>Backend</th><th>Connections</th><th>Bytes In</th><th>Bytes Out</th></tr>
 </thead>
@@ -129,8 +129,8 @@ func (d *DashboardServer) sendRoutes(sse *datastar.ServerSentEventGenerator) {
 
 	for _, r := range routes {
 		html += fmt.Sprintf(`<tr>
-<td class="backend">%s</td>
-<td class="count">%d</td>
+<td>%s</td>
+<td>%d</td>
 <td class="bytes">%s</td>
 <td class="bytes">%s</td>
 </tr>`,
