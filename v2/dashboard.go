@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -64,14 +65,20 @@ func (d *DashboardServer) serveStatic(w http.ResponseWriter, r *http.Request, na
 	w.Header().Set("Content-Type", contentType+"; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000") // 1 year
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	if _, err := w.Write(data); err != nil {
+		// Client disconnected or write failed - log but don't panic
+		// Cannot send error response as headers already sent
+		log.Printf("dashboard: write failed for %s: %v", name, err)
+	}
 }
 
 // serveDashboard serves the HTML dashboard.
 func (d *DashboardServer) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(dashboardHTML))
+	if _, err := w.Write([]byte(dashboardHTML)); err != nil {
+		log.Printf("dashboard: write failed: %v", err)
+	}
 }
 
 // streamUpdates sends real-time updates via Datastar SSE.
@@ -236,7 +243,9 @@ func (d *DashboardServer) listConnections(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(response)
+	if err := enc.Encode(response); err != nil {
+		log.Printf("dashboard: encode connections failed: %v", err)
+	}
 }
 
 // listRoutes returns routes as JSON (for non-Datastar clients).
@@ -252,7 +261,9 @@ func (d *DashboardServer) listRoutes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(response)
+	if err := enc.Encode(response); err != nil {
+		log.Printf("dashboard: encode routes failed: %v", err)
+	}
 }
 
 // formatBytes formats bytes in human-readable form.
