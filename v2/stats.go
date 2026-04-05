@@ -233,8 +233,11 @@ type StatsRegistry struct {
 	subID       atomic.Uint64
 
 	// Rate update ticker
-	ticker     *time.Ticker
-	tickerDone chan struct{}
+	ticker *time.Ticker
+
+	// Context for cancellation
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	// Historical logging (optional)
 	retention  RetentionWriter
@@ -252,9 +255,24 @@ type RetentionWriter interface {
 
 // NewStatsRegistry creates a new registry.
 func NewStatsRegistry() *StatsRegistry {
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &StatsRegistry{
-		tickerDone: make(chan struct{}),
-		clock:      RealClock{},
+		clock:  RealClock{},
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	r.ticker = time.NewTicker(time.Second)
+	go r.rateUpdater()
+	return r
+}
+
+// NewStatsRegistryWithContext creates a registry with a parent context.
+func NewStatsRegistryWithContext(parentCtx context.Context) *StatsRegistry {
+	ctx, cancel := context.WithCancel(parentCtx)
+	r := &StatsRegistry{
+		clock:  RealClock{},
+		ctx:    ctx,
+		cancel: cancel,
 	}
 	r.ticker = time.NewTicker(time.Second)
 	go r.rateUpdater()
@@ -440,7 +458,7 @@ func (r *StatsRegistry) rateUpdater() {
 		select {
 		case <-r.ticker.C:
 			r.updateRates()
-		case <-r.tickerDone:
+		case <-r.ctx.Done():
 			return
 		}
 	}
@@ -544,6 +562,8 @@ func (r *StatsRegistry) broadcast(event StatsEvent) {
 		ch := v.(chan StatsEvent)
 		select {
 		case ch <- event:
+		case <-r.ctx.Done():
+			return false // Stop iteration
 		default:
 			// Channel full, skip
 		}
@@ -553,7 +573,7 @@ func (r *StatsRegistry) broadcast(event StatsEvent) {
 
 // Close stops the rate updater and retention writer.
 func (r *StatsRegistry) Close() error {
-	close(r.tickerDone)
+	r.cancel()
 	r.ticker.Stop()
 
 	r.retentionMu.Lock()
