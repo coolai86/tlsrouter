@@ -1,6 +1,7 @@
 package tlsrouter
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/starfederation/datastar-go/datastar"
 )
+
+//go:embed static/datastar.js
+var staticFS embed.FS
 
 // DashboardServer provides a real-time dashboard using Datastar.
 type DashboardServer struct {
@@ -30,6 +34,8 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/dashboard", "/dashboard/":
 		d.serveDashboard(w, r)
+	case "/dashboard/datastar.js":
+		d.serveDatastar(w, r)
 	case "/dashboard/stream":
 		d.streamUpdates(w, r)
 	case "/dashboard/connections":
@@ -39,6 +45,19 @@ func (d *DashboardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveDatastar serves the vendored Datastar JS library.
+func (d *DashboardServer) serveDatastar(w http.ResponseWriter, r *http.Request) {
+	data, err := staticFS.ReadFile("static/datastar.js")
+	if err != nil {
+		http.Error(w, "Datastar JS not found", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000") // 1 year
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // serveDashboard serves the HTML dashboard.
